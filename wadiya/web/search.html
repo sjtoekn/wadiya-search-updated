@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Search – Wadiya.com</title>
+  <meta name="description" content="Search the web discovered by Wadiya.com.">
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="flow" id="flow" hidden></div>
+
+  <header class="top">
+    <a class="mark" href="/" id="markLink" aria-label="Wadiya.com home">wadiya<span>.com</span></a>
+
+    <form id="searchForm" class="box" role="search" autocomplete="off">
+      <input
+        id="q"
+        name="q"
+        type="search"
+        maxlength="200"
+        placeholder="Search a website, topic, place, or business"
+        aria-label="Search a website, topic, place, or business"
+      >
+      <button type="submit">Discover</button>
+    </form>
+  </header>
+
+  <main>
+    <p class="lede"></p>
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+    <div id="results" class="results"></div>
+    <nav id="pager" class="pager" aria-label="Pagination"></nav>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

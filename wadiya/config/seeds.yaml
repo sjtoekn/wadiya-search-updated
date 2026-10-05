@@ -1,0 +1,18 @@
+# Controlled seed list for Phase 0. Add only sites you are allowed to crawl.
+# These are PLACEHOLDERS: check each site's terms of use and robots.txt, and confirm reachability,
+# before running a crawl (they could not be fetched from the build sandbox).
+#   max_pages    - cap on pages stored per site
+#   max_depth    - link depth from the seed (0 = seed only)
+#   path_prefix  - optional: stay under this path
+seeds:
+  - url: https://docs.python.org/3/tutorial/
+    path_prefix: /3/tutorial/
+    max_pages: 30
+    max_depth: 1
+  - url: https://www.sqlite.org/fts5.html
+    max_pages: 10
+    max_depth: 1
+  - url: https://fastapi.tiangolo.com/tutorial/
+    path_prefix: /tutorial/
+    max_pages: 30
+    max_depth: 1

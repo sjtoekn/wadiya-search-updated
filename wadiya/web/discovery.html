@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Website Discovery – Wadiya.com</title>
+  <meta name="description" content="Discover what Wadiya knows about a website.">
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="discovery">
+  <header class="top">
+    <a class="mark" href="/" id="markLink" aria-label="Wadiya.com home">wadiya<span>.com</span></a>
+    <form id="searchForm" class="box" role="search" autocomplete="off">
+      <input id="q" name="q" type="search" maxlength="200" placeholder="What do you want to discover?" aria-label="Search query">
+      <button type="submit">Discover</button>
+    </form>
+  </header>
+
+  <main class="discovery-main">
+    <div id="status" class="status" role="status" aria-live="polite">Discovering website…</div>
+    <section id="discovery" aria-live="polite"></section>
+  </main>
+
+  <script src="/static/discovery.js"></script>
+</body>
+</html>
