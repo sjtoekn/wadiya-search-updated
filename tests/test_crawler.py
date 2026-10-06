@@ -1,3 +1,4 @@
+import unittest
 import os
 
 from tests.crawler_fixtures import Env, page, site_routes
@@ -327,6 +328,200 @@ class FeedDiscoveryTests(TempDirCase):
         self.assertIn("/feed-page", site.hits)
 
 
+
+class DiscoverySchedulerTests(TempDirCase):
+    def test_pending_discovered_site_is_promoted_and_crawled(self):
+        # Register a site discovered by a previous crawl. The next crawler
+        # run must automatically promote it into the existing seed/scope flow.
+        discovered_routes = site_routes()
+        discovered_routes["/"] = (
+            200,
+            *page(
+                "Automatically Discovered Site",
+                "Unique content from the automatically discovered website.",
+            ),
+        )
+
+        with MockSite(site_routes()) as source_site:
+            with MockSite(discovered_routes) as discovered_site:
+                discovered_root = discovered_site.base + "/"
+
+                self.assertTrue(
+                    self.storage.register_discovered_site(
+                        discovered_root,
+                        "127.0.0.1",
+                        "link",
+                    )
+                )
+
+                before = self.storage.get_discovered_site(discovered_root)
+                self.assertEqual(before["status"], "pending")
+
+                stats = Env(
+                    self.settings,
+                    source_site,
+                    max_depth=1,
+                ).crawler(self.storage).run(
+                    [Seed(source_site.base + "/")],
+                    fresh=True,
+                )
+
+                after = self.storage.get_discovered_site(discovered_root)
+
+                self.assertGreaterEqual(stats.attempted, 2)
+                self.assertIn("/", discovered_site.hits)
+                self.assertEqual(after["status"], "active")
+                self.assertEqual(after["crawl_count"], 1)
+                self.assertEqual(after["failure_count"], 0)
+                self.assertIsNone(after["last_error"])
+
+                with self.storage._conn() as c:
+                    row = c.execute(
+                        "SELECT status FROM urls WHERE url=?",
+                        (discovered_root,),
+                    ).fetchone()
+
+                self.assertIsNotNone(row)
+                self.assertEqual(row["status"], "done")
+
+    def test_failed_discovered_site_is_marked_failed(self):
+        routes = site_routes()
+        routes["/"] = (
+            500,
+            *page(
+                "Broken",
+                "This discovered website intentionally fails.",
+            ),
+        )
+
+        with MockSite(site_routes()) as source_site:
+            with MockSite(routes) as discovered_site:
+                discovered_root = discovered_site.base + "/"
+
+                self.assertTrue(
+                    self.storage.register_discovered_site(
+                        discovered_root,
+                        "127.0.0.1",
+                        "link",
+                    )
+                )
+
+                stats = Env(
+                    self.settings,
+                    source_site,
+                    max_depth=1,
+                ).crawler(self.storage).run(
+                    [Seed(source_site.base + "/")],
+                    fresh=True,
+                )
+
+                after = self.storage.get_discovered_site(discovered_root)
+
+                self.assertGreaterEqual(stats.failed, 1)
+                self.assertIn("/", discovered_site.hits)
+                self.assertEqual(after["status"], "failed")
+                self.assertEqual(after["crawl_count"], 1)
+                self.assertEqual(after["failure_count"], 1)
+                self.assertTrue(after["last_error"])
+
+class DiscoveryRetrySchedulerTests(TempDirCase):
+    def test_failed_discovery_waits_for_backoff_then_retries(self):
+        discovered_routes = site_routes()
+        discovered_routes["/"] = (
+            500,
+            *page(
+                "Temporary Failure",
+                "This discovered website fails temporarily.",
+            ),
+        )
+
+        with MockSite(site_routes()) as source_site:
+            with MockSite(discovered_routes) as discovered_site:
+                discovered_root = discovered_site.base + "/"
+
+                self.assertTrue(
+                    self.storage.register_discovered_site(
+                        discovered_root,
+                        "127.0.0.1",
+                        "link",
+                    )
+                )
+
+                # First crawl: discovered site fails.
+                stats = Env(
+                    self.settings,
+                    source_site,
+                    max_depth=1,
+                ).crawler(self.storage).run(
+                    [Seed(source_site.base + "/")],
+                    fresh=True,
+                )
+
+                row = self.storage.get_discovered_site(discovered_root)
+
+                self.assertGreaterEqual(stats.failed, 1)
+                self.assertEqual(row["status"], "failed")
+                self.assertEqual(row["failure_count"], 1)
+                self.assertIsNotNone(row["next_attempt_at"])
+
+                first_retry_at = row["next_attempt_at"]
+
+                # The failed discovery must not be promoted immediately.
+                ready = self.storage.list_discovered_sites(
+                    limit=100,
+                    eligible_only=True,
+                )
+                ready_urls = {row["url"] for row in ready}
+                self.assertNotIn(discovered_root, ready_urls)
+
+                # Make the retry eligible.
+                with self.storage._conn(write=True) as c:
+                    c.execute(
+                        """
+                        UPDATE discovered_sites
+                        SET next_attempt_at='2000-01-01T00:00:00+00:00'
+                        WHERE url=?
+                        """,
+                        (discovered_root,),
+                    )
+
+                ready = self.storage.list_discovered_sites(
+                    limit=100,
+                    eligible_only=True,
+                )
+                ready_urls = {row["url"] for row in ready}
+                self.assertIn(discovered_root, ready_urls)
+
+                # Fix the site and run again.
+                discovered_routes["/"] = (
+                    200,
+                    *page(
+                        "Recovered Site",
+                        "The automatically discovered website recovered.",
+                    ),
+                )
+
+                # MockSite uses the same route mapping object, so the next
+                # request sees the updated successful response.
+                stats = Env(
+                    self.settings,
+                    source_site,
+                    max_depth=1,
+                ).crawler(self.storage).run(
+                    [Seed(source_site.base + "/")],
+                    fresh=True,
+                )
+
+                row = self.storage.get_discovered_site(discovered_root)
+
+                self.assertGreaterEqual(stats.attempted, 2)
+                self.assertEqual(row["status"], "active")
+                self.assertEqual(row["crawl_count"], 2)
+                self.assertEqual(row["failure_count"], 0)
+                self.assertIsNone(row["next_attempt_at"])
+                self.assertNotEqual(first_retry_at, "2000-01-01T00:00:00+00:00")
+
+
 class SitemapDiscoveryTests(TempDirCase):
     def test_conventional_sitemap_enqueues_pages(self):
         routes = site_routes()
@@ -458,6 +653,14 @@ class SitemapDiscoveryTests(TempDirCase):
         self.assertNotIn("/outside", site.hits)
         self.assertNotIn("https://elsewhere.invalid/outside", site.hits)
 
+        discovered = self.storage.get_discovered_site(
+            "https://elsewhere.invalid/"
+        )
+        self.assertIsNotNone(discovered)
+        self.assertEqual(discovered["domain"], "elsewhere.invalid")
+        self.assertIn(discovered["source"], {"link", "sitemap"})
+        self.assertEqual(discovered["status"], "pending")
+
     def test_sitemap_page_disallowed_by_robots_is_not_crawled(self):
         routes = site_routes()
         routes["/robots.txt"] = (
@@ -552,3 +755,253 @@ class SitemapDiscoveryTests(TempDirCase):
 
         self.assertGreaterEqual(stats.attempted, 1)
         self.assertNotIn("/broken", site.hits)
+
+class AutoDiscoveryLinkTests(unittest.TestCase):
+    def test_external_link_registers_site_without_enqueueing(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from wadiya.crawler.crawler import Crawler
+
+        settings = SimpleNamespace(
+            db_path=":memory:",
+        )
+        storage = Mock()
+        storage.domain_url_count.return_value = 0
+
+        crawler = Crawler(
+            settings,
+            storage,
+            Mock(),
+            Mock(),
+        )
+
+        cfg = SimpleNamespace(max_depth=2)
+
+        scope = Mock()
+        scope.allows.side_effect = lambda url: url.startswith(
+            "https://example.com/"
+        )
+        scope.config.side_effect = lambda site: (
+            SimpleNamespace(max_pages=10)
+            if site == "example.com"
+            else None
+        )
+
+        item = SimpleNamespace(depth=0)
+
+        crawler._enqueue_links(
+            [
+                "https://example.com/internal-page",
+                "https://external.example/page",
+            ],
+            item,
+            cfg,
+            scope,
+        )
+
+        storage.enqueue.assert_called_once_with(
+            "https://example.com/internal-page",
+            "example.com",
+            1,
+        )
+        storage.register_discovered_site.assert_called_once_with(
+            "https://external.example/",
+            "external.example",
+            "link",
+        )
+
+
+class ContinuousSchedulerIntegrationTests(TempDirCase):
+    def test_discovered_site_flows_into_second_continuous_cycle(self):
+        from wadiya.crawler.scheduler import ContinuousCrawler
+
+        source_routes = site_routes()
+
+        discovered_routes = site_routes()
+        discovered_routes["/"] = (
+            200,
+            *page(
+                "Second Cycle Site",
+                "This site must be crawled automatically during cycle two.",
+            ),
+        )
+
+        source_site = None
+        discovered_site = None
+
+        with MockSite(source_routes) as source_site:
+            with MockSite(discovered_routes) as discovered_site:
+                discovered_root = (
+                    discovered_site.base.replace(
+                        "127.0.0.1:",
+                        "localhost:",
+                    )
+                    + "/"
+                )
+
+                source_routes["/"] = (
+                    200,
+                    *page(
+                        "Discovery Source",
+                        "Source page discovers another website.",
+                        links=[discovered_root],
+                    ),
+                )
+
+                scheduler = ContinuousCrawler(
+                    self.settings,
+                    self.storage,
+                    None,
+                    Env(
+                        self.settings,
+                        source_site,
+                    ).fetcher,
+                    Env(
+                        self.settings,
+                        source_site,
+                    ).robots,
+                    sleep=lambda _: None,
+                )
+
+                cycles = list(
+                    scheduler.run(
+                        [Seed(source_site.base + "/")],
+                        fresh=True,
+                        interval=0,
+                        max_cycles=2,
+                    )
+                )
+
+                self.assertEqual(len(cycles), 2)
+
+                self.assertIn("/", source_site.hits)
+                self.assertIn("/", discovered_site.hits)
+
+                discovered = self.storage.get_discovered_site(
+                    discovered_root
+                )
+
+                self.assertIsNotNone(discovered)
+                self.assertEqual(discovered["status"], "active")
+                self.assertEqual(discovered["crawl_count"], 1)
+                self.assertEqual(discovered["failure_count"], 0)
+                self.assertIsNone(discovered["last_error"])
+
+                with self.storage._conn() as c:
+                    row = c.execute(
+                        "SELECT status FROM urls WHERE url=?",
+                        (discovered_root,),
+                    ).fetchone()
+
+                self.assertIsNotNone(row)
+                self.assertEqual(row["status"], "done")
+
+
+class ContinuousSchedulerTests(TempDirCase):
+    def test_scheduler_runs_multiple_cycles_and_indexes(self):
+        from wadiya.crawler.scheduler import ContinuousCrawler
+
+        sleeps = []
+
+        class FakeCrawler:
+            calls = []
+
+            def __init__(self, settings, storage, fetcher, robots):
+                pass
+
+            def run(self, seeds, fresh=False):
+                self.__class__.calls.append({
+                    "fresh": fresh,
+                    "seeds": seeds,
+                })
+
+                from wadiya.crawler.crawler import CrawlStats
+
+                return CrawlStats(
+                    attempted=1,
+                    fetched=1,
+                    stored=1,
+                )
+
+        import wadiya.crawler.scheduler as scheduler_module
+
+        original_crawler = scheduler_module.Crawler
+        scheduler_module.Crawler = FakeCrawler
+
+        try:
+            scheduler = ContinuousCrawler(
+                self.settings,
+                self.storage,
+                None,
+                object(),
+                object(),
+                sleep=lambda value: sleeps.append(value),
+            )
+
+            cycles = list(
+                scheduler.run(
+                    [],
+                    fresh=True,
+                    interval=12,
+                    max_cycles=3,
+                )
+            )
+        finally:
+            scheduler_module.Crawler = original_crawler
+
+        self.assertEqual(len(cycles), 3)
+        self.assertEqual(
+            [cycle.number for cycle in cycles],
+            [1, 2, 3],
+        )
+
+        self.assertEqual(
+            [call["fresh"] for call in FakeCrawler.calls],
+            [True, False, False],
+        )
+
+        self.assertEqual(
+            sleeps,
+            [12.0, 12.0],
+        )
+
+    def test_scheduler_allows_zero_interval_without_waiting(self):
+        from wadiya.crawler.scheduler import ContinuousCrawler
+
+        sleeps = []
+
+        class FakeCrawler:
+            def __init__(self, settings, storage, fetcher, robots):
+                pass
+
+            def run(self, seeds, fresh=False):
+                from wadiya.crawler.crawler import CrawlStats
+                return CrawlStats()
+
+        import wadiya.crawler.scheduler as scheduler_module
+
+        original_crawler = scheduler_module.Crawler
+        scheduler_module.Crawler = FakeCrawler
+
+        try:
+            scheduler = ContinuousCrawler(
+                self.settings,
+                self.storage,
+                None,
+                object(),
+                object(),
+                sleep=lambda value: sleeps.append(value),
+            )
+
+            cycles = list(
+                scheduler.run(
+                    [],
+                    interval=-5,
+                    max_cycles=2,
+                )
+            )
+        finally:
+            scheduler_module.Crawler = original_crawler
+
+        self.assertEqual(len(cycles), 2)
+        self.assertEqual(sleeps, [0.0])

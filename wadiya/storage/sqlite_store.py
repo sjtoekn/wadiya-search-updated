@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS documents (
   crawled_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   indexed_at TEXT,
-  fail_count INTEGER NOT NULL DEFAULT 0
+  fail_count INTEGER NOT NULL DEFAULT 0,
+  nosnippet INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_documents_domain ON documents(domain);
 CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(content_hash);
@@ -81,14 +82,38 @@ CREATE TABLE IF NOT EXISTS query_log (
   result_count INTEGER NOT NULL,
   latency_ms REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS discovered_sites (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  url TEXT NOT NULL UNIQUE,
+  domain TEXT NOT NULL,
+  source TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  last_crawled_at TEXT,
+  crawl_count INTEGER NOT NULL DEFAULT 0,
+  failure_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  next_attempt_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_discovered_sites_domain
+  ON discovered_sites(domain);
+CREATE INDEX IF NOT EXISTS idx_discovered_sites_status
+  ON discovered_sites(status, id);
+CREATE INDEX IF NOT EXISTS idx_discovered_sites_source
+  ON discovered_sites(source, id);
 """
 
 _RUN_COLS = ("attempted", "fetched", "robots_blocked", "failed", "stored",
              "duplicates", "fetch_ms_total", "fetch_count", "duration_s")
 _DOC_COLS = ("url", "canonical_url", "domain", "title", "description", "headings", "content",
-             "language", "status", "content_hash", "crawled_at", "updated_at")
+             "language", "status", "content_hash", "crawled_at", "updated_at", "nosnippet")
 _COUNTED = ("done", "duplicate", "noindex")   # statuses that consumed a page of the domain budget
 QUERY_LOG_KEEP = 10_000
+
+# Database schema version. Increment this when a new migration is added.
+SCHEMA_VERSION = 4
 
 
 def _doc(row: sqlite3.Row) -> Document:
@@ -124,9 +149,105 @@ class SQLiteStorage(Storage):
         with self._conn() as c:
             c.execute("PRAGMA journal_mode=WAL")
             c.executescript(SCHEMA)
-            cols = {r[1] for r in c.execute("PRAGMA table_info(documents)")}
-            if "fail_count" not in cols:           # migrate databases created before the lifecycle work
-                c.execute("ALTER TABLE documents ADD COLUMN fail_count INTEGER NOT NULL DEFAULT 0")
+
+            current_version = int(
+                c.execute("PRAGMA user_version").fetchone()[0]
+            )
+
+            if current_version > SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"database schema version {current_version} is newer "
+                    f"than supported version {SCHEMA_VERSION}"
+                )
+
+            # Migration 1: add lifecycle failure tracking to older databases.
+            # The CREATE TABLE schema already contains this column for new DBs,
+            # so this only runs when upgrading an older schema.
+            if current_version < 1:
+                cols = {
+                    r[1]
+                    for r in c.execute("PRAGMA table_info(documents)")
+                }
+                if "fail_count" not in cols:
+                    c.execute(
+                        "ALTER TABLE documents "
+                        "ADD COLUMN fail_count INTEGER NOT NULL DEFAULT 0"
+                    )
+
+                c.execute("PRAGMA user_version = 1")
+                current_version = 1
+
+            # Migration 2: automatic discovery registry.
+            if current_version < 2:
+                c.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS discovered_sites (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      url TEXT NOT NULL UNIQUE,
+                      domain TEXT NOT NULL,
+                      source TEXT NOT NULL,
+                      status TEXT NOT NULL DEFAULT 'pending',
+                      first_seen_at TEXT NOT NULL,
+                      last_seen_at TEXT NOT NULL,
+                      last_crawled_at TEXT,
+                      crawl_count INTEGER NOT NULL DEFAULT 0,
+                      failure_count INTEGER NOT NULL DEFAULT 0,
+                      last_error TEXT
+                    )
+                    """
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "idx_discovered_sites_domain "
+                    "ON discovered_sites(domain)"
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "idx_discovered_sites_status "
+                    "ON discovered_sites(status, id)"
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "idx_discovered_sites_source "
+                    "ON discovered_sites(source, id)"
+                )
+                c.execute("PRAGMA user_version = 2")
+                current_version = 2
+
+            # Migration 3: publisher snippet suppression.
+            if current_version < 3:
+                cols = {
+                    r[1]
+                    for r in c.execute("PRAGMA table_info(documents)")
+                }
+                if "nosnippet" not in cols:
+                    c.execute(
+                        "ALTER TABLE documents "
+                        "ADD COLUMN nosnippet INTEGER NOT NULL DEFAULT 0"
+                    )
+                c.execute("PRAGMA user_version = 3")
+                current_version = 3
+
+            # Migration 4: retry scheduling for failed discovered sites.
+            if current_version < 4:
+                cols = {
+                    r[1]
+                    for r in c.execute("PRAGMA table_info(discovered_sites)")
+                }
+                if "next_attempt_at" not in cols:
+                    c.execute(
+                        "ALTER TABLE discovered_sites "
+                        "ADD COLUMN next_attempt_at TEXT"
+                    )
+
+                c.execute("PRAGMA user_version = 4")
+                current_version = 4
+
+            if current_version != SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"database migration incomplete: "
+                    f"version {current_version}, expected {SCHEMA_VERSION}"
+                )
 
     # ------------------------------------------------------------------ documents
     def save_document(self, doc: Document) -> SaveResult:
@@ -144,7 +265,10 @@ class SQLiteStorage(Storage):
                     if clash or (active and doc.url != doc.canonical_url):
                         return SaveResult("duplicate", ex["id"])
                 elif active and ex["content_hash"] == doc.content_hash:
-                    c.execute("UPDATE documents SET crawled_at=?, fail_count=0 WHERE id=?", (now, ex["id"]))
+                    c.execute(
+                        "UPDATE documents SET crawled_at=?, fail_count=0, nosnippet=? WHERE id=?",
+                        (now, int(bool(doc.nosnippet)), ex["id"]),
+                    )
                     return SaveResult("unchanged", ex["id"])
                 self._update(c, ex["id"], vals, now)
                 return SaveResult("updated" if active else "reactivated", ex["id"])
@@ -272,6 +396,128 @@ class SQLiteStorage(Storage):
                 "last_crawled": summary["last_crawled"],
                 "pages": [dict(row) for row in pages],
             }
+
+    # ---------------------------------------------------------- discovery registry
+    def register_discovered_site(
+        self,
+        url: str,
+        domain: str,
+        source: str,
+        status: str = "pending",
+    ) -> bool:
+        now = now_iso()
+        with self._conn(write=True) as c:
+            existing = c.execute(
+                "SELECT id FROM discovered_sites WHERE url=?",
+                (url,),
+            ).fetchone()
+
+            if existing:
+                c.execute(
+                    "UPDATE discovered_sites SET last_seen_at=? WHERE url=?",
+                    (now, url),
+                )
+                return False
+
+            c.execute(
+                """
+                INSERT INTO discovered_sites (
+                  url, domain, source, status, first_seen_at, last_seen_at
+                )
+                VALUES (?,?,?,?,?,?)
+                """,
+                (url, domain, source, status, now, now),
+            )
+            return True
+
+    def get_discovered_site(self, url: str) -> dict | None:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM discovered_sites WHERE url=?",
+                (url,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_discovered_sites(
+        self,
+        status: str | None = None,
+        limit: int = 100,
+        *,
+        eligible_only: bool = False,
+    ) -> list:
+        limit = max(1, min(int(limit), 1000))
+        now = now_iso()
+
+        with self._conn() as c:
+            if eligible_only:
+                rows = c.execute(
+                    "SELECT * FROM discovered_sites "
+                    "WHERE status='pending' "
+                    "OR (status='failed' AND "
+                    "(next_attempt_at IS NULL OR next_attempt_at<=?)) "
+                    "ORDER BY id ASC LIMIT ?",
+                    (now, limit),
+                ).fetchall()
+            elif status is None:
+                rows = c.execute(
+                    "SELECT * FROM discovered_sites "
+                    "ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT * FROM discovered_sites "
+                    "WHERE status=? ORDER BY id DESC LIMIT ?",
+                    (status, limit),
+                ).fetchall()
+
+            return [dict(row) for row in rows]
+
+    def mark_discovered_site_crawled(
+        self,
+        url: str,
+        success: bool,
+        error: str | None = None,
+        next_attempt_at: str | None = None,
+    ) -> None:
+        now = now_iso()
+        with self._conn(write=True) as c:
+            if success:
+                c.execute(
+                    """
+                    UPDATE discovered_sites
+                    SET status='active',
+                        last_crawled_at=?,
+                        crawl_count=crawl_count+1,
+                        failure_count=0,
+                        last_error=NULL,
+                        next_attempt_at=NULL,
+                        last_seen_at=?
+                    WHERE url=?
+                    """,
+                    (now, now, url),
+                )
+            else:
+                c.execute(
+                    """
+                    UPDATE discovered_sites
+                    SET status='failed',
+                        last_crawled_at=?,
+                        crawl_count=crawl_count+1,
+                        failure_count=failure_count+1,
+                        last_error=?,
+                        next_attempt_at=?,
+                        last_seen_at=?
+                    WHERE url=?
+                    """,
+                    (
+                        now,
+                        error[:300] if error else None,
+                        next_attempt_at,
+                        now,
+                        url,
+                    ),
+                )
 
     # ------------------------------------------------------------------ queue
     def enqueue(self, url: str, domain: str, depth: int, force: bool = False) -> bool:

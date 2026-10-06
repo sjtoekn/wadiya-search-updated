@@ -19,6 +19,10 @@ def main(argv=None) -> int:
     sub.add_parser("init")
     c = sub.add_parser("crawl"); c.add_argument("--fresh", action="store_true", help="reset the URL queue first")
     c.add_argument("--seeds"); c.add_argument("--no-index", action="store_true")
+    c.add_argument("--continuous", action="store_true",
+                   help="keep running crawl/discovery/index cycles")
+    c.add_argument("--interval", type=float, default=60.0,
+                   help="seconds between continuous crawl cycles")
     sub.add_parser("index"); sub.add_parser("reindex"); sub.add_parser("stats"); sub.add_parser("hash-password")
     s = sub.add_parser("serve"); s.add_argument("--host", default="127.0.0.1"); s.add_argument("--port", type=int, default=8000)
     args = ap.parse_args(argv)
@@ -39,23 +43,66 @@ def main(argv=None) -> int:
     if args.cmd == "init":
         print("Initialised", settings.db_path, "and", settings.index_path)
     elif args.cmd == "crawl":
-        from .crawler.crawler import Crawler
         from .crawler.fetcher import Fetcher
         from .crawler.robots import RobotsChecker
         from .crawler.seeds import load_seeds
+        from .crawler.lock import CrawlAlreadyRunning
+
         seeds = load_seeds(args.seeds or settings.seeds_path)
         fetcher = Fetcher(settings)
-        from .crawler.lock import CrawlAlreadyRunning
-        try:
-            stats = Crawler(settings, storage, fetcher,
-                            RobotsChecker(fetcher, settings.robots_token, settings.robots_cache_ttl,
-                                          settings.max_robots_bytes)).run(seeds, fresh=args.fresh)
-        except CrawlAlreadyRunning as e:
-            print(f"error: {e}", file=sys.stderr)
-            return 3
-        print("crawl:", json.dumps(stats.as_dict()))
-        if not args.no_index:
-            print("indexed", index_pending(storage, indexer), "documents")
+        robots = RobotsChecker(
+            fetcher,
+            settings.robots_token,
+            settings.robots_cache_ttl,
+            settings.max_robots_bytes,
+        )
+
+        if args.continuous:
+            from .crawler.scheduler import ContinuousCrawler
+
+            scheduler = ContinuousCrawler(
+                settings,
+                storage,
+                None if args.no_index else indexer,
+                fetcher,
+                robots,
+            )
+
+            try:
+                for cycle in scheduler.run(
+                    seeds,
+                    fresh=args.fresh,
+                    interval=args.interval,
+                ):
+                    print(
+                        "crawl cycle:",
+                        json.dumps({
+                            "cycle": cycle.number,
+                            "crawl": cycle.stats.as_dict(),
+                            "indexed": cycle.indexed,
+                        }),
+                        flush=True,
+                    )
+            except CrawlAlreadyRunning as e:
+                print(f"error: {e}", file=sys.stderr)
+                return 3
+        else:
+            from .crawler.crawler import Crawler
+
+            try:
+                stats = Crawler(
+                    settings,
+                    storage,
+                    fetcher,
+                    robots,
+                ).run(seeds, fresh=args.fresh)
+            except CrawlAlreadyRunning as e:
+                print(f"error: {e}", file=sys.stderr)
+                return 3
+
+            print("crawl:", json.dumps(stats.as_dict()))
+            if not args.no_index:
+                print("indexed", index_pending(storage, indexer), "documents")
     elif args.cmd == "index":
         print("indexed", index_pending(storage, indexer), "documents")
     elif args.cmd == "reindex":

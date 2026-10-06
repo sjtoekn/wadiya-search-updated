@@ -1,4 +1,96 @@
+import sqlite3
+from pathlib import Path
+
 from tests.helpers import TempDirCase, make_doc
+from wadiya.storage.sqlite_store import SQLiteStorage
+
+
+
+class MigrationTests(TempDirCase):
+    def test_v0_database_migrates_to_v4(self):
+        db = Path(self.tmp) / "legacy.sqlite"
+
+        conn = sqlite3.connect(db)
+        conn.executescript("""
+            CREATE TABLE documents (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              url TEXT NOT NULL UNIQUE,
+              canonical_url TEXT,
+              domain TEXT NOT NULL,
+              title TEXT,
+              description TEXT,
+              headings TEXT,
+              body TEXT,
+              content_hash TEXT,
+              fetched_at TEXT,
+              status TEXT,
+              active INTEGER NOT NULL DEFAULT 1
+            );
+            PRAGMA user_version = 0;
+        """)
+        conn.commit()
+        conn.close()
+
+        storage = SQLiteStorage(str(db))
+        storage.init()
+
+        with sqlite3.connect(db) as check:
+            version = check.execute("PRAGMA user_version").fetchone()[0]
+            doc_cols = {
+                row[1] for row in check.execute("PRAGMA table_info(documents)")
+            }
+            discovered_cols = {
+                row[1]
+                for row in check.execute(
+                    "PRAGMA table_info(discovered_sites)"
+                )
+            }
+
+        self.assertEqual(version, 4)
+        self.assertIn("next_attempt_at", discovered_cols)
+        self.assertIn("fail_count", doc_cols)
+        self.assertIn("nosnippet", doc_cols)
+        self.assertIn("url", discovered_cols)
+        self.assertIn("status", discovered_cols)
+
+
+class V1MigrationTests(TempDirCase):
+    def test_v1_database_migrates_to_v4(self):
+        db = Path(self.tmp) / "v1.sqlite"
+
+        # Build a valid current schema, then reduce it to the v1 state:
+        # fail_count exists, but the v2 discovery registry does not.
+        storage = SQLiteStorage(str(db))
+        storage.init()
+
+        with sqlite3.connect(db) as conn:
+            conn.execute("DROP INDEX IF EXISTS idx_discovered_sites_domain")
+            conn.execute("DROP INDEX IF EXISTS idx_discovered_sites_status")
+            conn.execute("DROP INDEX IF EXISTS idx_discovered_sites_source")
+            conn.execute("DROP TABLE discovered_sites")
+            conn.execute("PRAGMA user_version = 1")
+
+        migrated = SQLiteStorage(str(db))
+        migrated.init()
+
+        with sqlite3.connect(db) as check:
+            version = check.execute("PRAGMA user_version").fetchone()[0]
+            doc_cols = {
+                row[1] for row in check.execute("PRAGMA table_info(documents)")
+            }
+            discovered_cols = {
+                row[1]
+                for row in check.execute(
+                    "PRAGMA table_info(discovered_sites)"
+                )
+            }
+
+        self.assertEqual(version, 4)
+        self.assertIn("next_attempt_at", discovered_cols)
+        self.assertIn("fail_count", doc_cols)
+        self.assertIn("nosnippet", doc_cols)
+        self.assertIn("url", discovered_cols)
+        self.assertIn("status", discovered_cols)
 
 
 class StorageTests(TempDirCase):
@@ -118,3 +210,106 @@ class StorageTests(TempDirCase):
         st = s.search_stats()
         self.assertEqual((st["search_count"], st["avg_latency_ms"]), (2, 15.0))
         self.assertEqual(s.recent_queries()[0]["query"], "world")
+
+class DiscoveryRegistryTests(TempDirCase):
+    def test_register_discovered_site_deduplicates(self):
+        s = self.storage
+
+        self.assertTrue(
+            s.register_discovered_site(
+                "https://example.org/",
+                "example.org",
+                "link",
+            )
+        )
+
+        self.assertFalse(
+            s.register_discovered_site(
+                "https://example.org/",
+                "example.org",
+                "sitemap",
+            )
+        )
+
+        row = s.get_discovered_site("https://example.org/")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["domain"], "example.org")
+        self.assertEqual(row["source"], "link")
+        self.assertEqual(row["status"], "pending")
+
+    def test_discovered_site_retry_schedule_is_persisted(self):
+        s = self.storage
+
+        s.register_discovered_site(
+            "https://retry.example/",
+            "retry.example",
+            "link",
+        )
+
+        s.mark_discovered_site_crawled(
+            "https://retry.example/",
+            success=False,
+            error="temporary failure",
+            next_attempt_at="2099-01-01T00:00:00+00:00",
+        )
+
+        row = s.get_discovered_site("https://retry.example/")
+
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["crawl_count"], 1)
+        self.assertEqual(row["failure_count"], 1)
+        self.assertEqual(row["last_error"], "temporary failure")
+        self.assertEqual(
+            row["next_attempt_at"],
+            "2099-01-01T00:00:00+00:00",
+        )
+
+        ready = s.list_discovered_sites(
+            limit=100,
+            eligible_only=True,
+        )
+
+        self.assertEqual(ready, [])
+
+        s.mark_discovered_site_crawled(
+            "https://retry.example/",
+            success=True,
+        )
+
+        row = s.get_discovered_site("https://retry.example/")
+
+        self.assertEqual(row["status"], "active")
+        self.assertEqual(row["failure_count"], 0)
+        self.assertIsNone(row["next_attempt_at"])
+
+
+    def test_discovered_site_crawl_lifecycle(self):
+        s = self.storage
+
+        s.register_discovered_site(
+            "https://example.org/",
+            "example.org",
+            "link",
+        )
+
+        s.mark_discovered_site_crawled(
+            "https://example.org/",
+            success=True,
+        )
+
+        row = s.get_discovered_site("https://example.org/")
+        self.assertEqual(row["status"], "active")
+        self.assertEqual(row["crawl_count"], 1)
+        self.assertEqual(row["failure_count"], 0)
+
+        s.mark_discovered_site_crawled(
+            "https://example.org/",
+            success=False,
+            error="connection failed",
+        )
+
+        row = s.get_discovered_site("https://example.org/")
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["crawl_count"], 2)
+        self.assertEqual(row["failure_count"], 1)
+        self.assertEqual(row["last_error"], "connection failed")

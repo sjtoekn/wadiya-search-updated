@@ -37,6 +37,8 @@ class Settings:
     max_redirects: int = 5
     max_content_chars: int = 200_000
     max_consecutive_failures: int = 3     # failed crawls in a row before an existing doc is dropped as 'unreachable'
+    discovery_retry_base_delay: float = 60.0
+    discovery_retry_max_delay: float = 24 * 3600.0
     robots_cache_ttl: int = 3600
     allowed_ports: tuple = (80, 443)
     # Tests / local mock sites ONLY. Deliberately NOT readable from the environment.

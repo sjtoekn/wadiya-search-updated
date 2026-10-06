@@ -133,6 +133,14 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None) -> FastAP
     def home():
         return FileResponse(WEB_DIR / "index.html")
 
+    @app.get("/robots.txt", include_in_schema=False)
+    def robots_txt():
+        return FileResponse(WEB_DIR / "robots.txt", media_type="text/plain")
+
+    @app.get("/sitemap.xml", include_in_schema=False)
+    def sitemap_xml():
+        return FileResponse(WEB_DIR / "sitemap.xml", media_type="application/xml")
+
     @app.get("/admin", include_in_schema=False)
     def admin_page():          # static shell only; every data endpoint above is protected
         return FileResponse(WEB_DIR / "admin.html")

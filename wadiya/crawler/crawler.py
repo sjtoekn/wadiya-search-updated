@@ -1,6 +1,8 @@
 """Crawl orchestration. Fetch -> robots -> extract -> store. No ranking, no index access."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import hashlib
 import threading
 import time
@@ -55,9 +57,29 @@ class Crawler:
             return self._run(seeds, fresh)
 
     def _run(self, seeds, fresh: bool) -> CrawlStats:
-        from .seeds import Scope
+        from .seeds import Seed, Scope
 
-        scope = Scope(seeds, self.s)
+        # Promote pending discovered sites into the existing crawler scope.
+        discovered = self.storage.list_discovered_sites(
+            limit=max(1, self.s.max_total_pages),
+            eligible_only=True,
+        )
+        discovered_seeds = []
+
+        for row in discovered:
+            url = normalize_url(row.get("url"))
+            if not url:
+                continue
+            discovered_seeds.append(
+                Seed(
+                    url=url,
+                    max_pages=self.s.max_pages_per_domain,
+                    max_depth=self.s.max_depth,
+                )
+            )
+
+        crawl_seeds = list(seeds) + discovered_seeds
+        scope = Scope(crawl_seeds, self.s)
         self._ready_at = {}
         with self._sitemap_lock:
             self._sitemaps_seen.clear()
@@ -71,7 +93,7 @@ class Crawler:
         stats, t0, state = CrawlStats(), self._clock(), "finished"
 
         try:
-            for seed in seeds:
+            for seed in crawl_seeds:
                 u = normalize_url(seed.url)
                 if not u or not scope.allows(u):
                     self.storage.log_crawl_event(
@@ -208,6 +230,28 @@ class Crawler:
         target.fetch_count += source.fetch_count
 
     # --------------------------------------------------------------- sitemaps
+    def _register_discovered_sitemap(self, url):
+        normalized = normalize_url(url)
+        if not normalized:
+            return
+
+        parts = urlsplit(normalized)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            return
+
+        if self.fetcher.validate(normalized):
+            return
+
+        root_url = normalize_url(f"{parts.scheme}://{parts.netloc}/")
+        if not root_url or self.fetcher.validate(root_url):
+            return
+
+        self.storage.register_discovered_site(
+            root_url,
+            site_key(parts.hostname),
+            "sitemap",
+        )
+
     def _sitemap_resource_allowed(self, url, scope):
         normalized = normalize_url(url)
         if not normalized or not scope.allows(normalized):
@@ -238,7 +282,11 @@ class Crawler:
 
         depth = item.depth + 1
         for url in urls:
-            if not looks_crawlable(url) or not scope.allows(url):
+            if not looks_crawlable(url):
+                continue
+
+            if not scope.allows(url):
+                self._register_discovered_sitemap(url)
                 continue
 
             if not self.robots.is_allowed(url):
@@ -301,6 +349,8 @@ class Crawler:
                 normalized = self._sitemap_resource_allowed(nested, scope)
                 if normalized:
                     pending.append(normalized)
+                else:
+                    self._register_discovered_sitemap(nested)
 
     def _discover_feeds(self, feed_urls, item, cfg, scope):
         """Fetch discovered RSS/Atom feeds and enqueue their page URLs safely."""
@@ -339,6 +389,33 @@ class Crawler:
     def _finish(self, run_id, url, outcome, queue_status, http=None, ms=None, error=None):
         self.storage.mark_url(url, queue_status, http, error)
         self.storage.log_crawl_event(run_id, url, outcome, http, ms, error)
+
+        # Keep automatically discovered roots synchronized with
+        # their actual crawl result.
+        discovered = self.storage.get_discovered_site(url)
+        if discovered and discovered.get("status") in ("pending", "failed"):
+            if queue_status in ("done", "duplicate", "noindex"):
+                self.storage.mark_discovered_site_crawled(
+                    url, success=True
+                )
+            elif queue_status in ("failed", "robots_blocked", "skipped"):
+                failure_count = int(discovered.get("failure_count") or 0) + 1
+                delay = min(
+                    self.s.discovery_retry_max_delay,
+                    self.s.discovery_retry_base_delay
+                    * (2 ** max(0, failure_count - 1)),
+                )
+                next_attempt = (
+                    datetime.now(timezone.utc)
+                    + timedelta(seconds=delay)
+                ).isoformat()
+
+                self.storage.mark_discovered_site_crawled(
+                    url,
+                    success=False,
+                    error=error,
+                    next_attempt_at=next_attempt,
+                )
 
     def _delay_for(self, url) -> float:
         d = max(self.s.default_crawl_delay, self.robots.crawl_delay(url) or 0.0)
@@ -443,9 +520,25 @@ class Crawler:
         if item.depth >= cfg.max_depth:
             return
         for link in links:
-            if not looks_crawlable(link) or not scope.allows(link):
+            if not looks_crawlable(link):
                 continue
+
             site = site_key(urlsplit(link).hostname)
+
+            if not scope.allows(link):
+                # Same-domain URLs outside a path_prefix are not
+                # new website discoveries.
+                if scope.config(site) is None:
+                    parts = urlsplit(link)
+                    if parts.scheme and parts.netloc and parts.hostname:
+                        root_url = f"{parts.scheme}://{parts.netloc}/"
+                        self.storage.register_discovered_site(
+                            root_url,
+                            site,
+                            "link",
+                        )
+                continue
+
             site_cfg = scope.config(site)
             if self.storage.domain_url_count(site) >= site_cfg.max_pages * 5:   # bound queue growth
                 continue

@@ -28,6 +28,7 @@ class Document:
     headings: str = ""            # extra field: heading text, newline-separated
     indexed_at: Optional[str] = None
     fail_count: int = 0           # consecutive failed crawls (reset on success)
+    nosnippet: bool = False       # publisher requests that search results omit the snippet
 
 
 @dataclass
