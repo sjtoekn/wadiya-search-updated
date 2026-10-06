@@ -43,6 +43,99 @@ class HandlerTests(SearchStackCase):
         self.assertEqual(handlers.handle_search(self.svc, "wadi", None)[1]["page"], 1)
         self.assertEqual(handlers.handle_search(self.svc, "wadi", "")[1]["page"], 1)
 
+    def test_admin_discovery_handler(self):
+        self.storage.register_discovered_site(
+            "https://alpha.example/",
+            "alpha.example",
+            source="link",
+        )
+        self.storage.register_discovered_site(
+            "https://beta.example/",
+            "beta.example",
+            source="sitemap",
+        )
+
+        status, body = handlers.handle_admin_discovery(self.storage)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["stats"]["total"], 2)
+        self.assertEqual(len(body["sites"]), 2)
+
+    def test_admin_discovery_handler_filters(self):
+        self.storage.register_discovered_site(
+            "https://alpha.example/",
+            "alpha.example",
+            source="link",
+        )
+        self.storage.register_discovered_site(
+            "https://beta.example/",
+            "beta.example",
+            source="sitemap",
+        )
+
+        status, body = handlers.handle_admin_discovery(
+            self.storage,
+            source="sitemap",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(len(body["sites"]), 1)
+        self.assertEqual(body["sites"][0]["domain"], "beta.example")
+
+    def test_admin_discovery_handler_rejects_invalid_filters(self):
+        cases = [
+            {"status": "robots_blocked"},
+            {"status": "unknown"},
+            {"source": "bad source"},
+            {"source": "x" * 101},
+            {"query": "x" * 254},
+            {"page": "abc"},
+            {"page": "0"},
+            {"page": "-1"},
+            {"limit": "abc"},
+            {"limit": "10"},
+            {"limit": "200"},
+        ]
+
+        for kwargs in cases:
+            status, body = handlers.handle_admin_discovery(
+                self.storage,
+                **kwargs,
+            )
+            self.assertEqual(status, 400, kwargs)
+            self.assertEqual(
+                set(body["error"]),
+                {"code", "message"},
+            )
+
+    def test_admin_discovery_handler_pagination(self):
+        for i in range(55):
+            self.storage.register_discovered_site(
+                f"https://site{i}.example/",
+                "site.example",
+                source="link",
+            )
+
+        status, body = handlers.handle_admin_discovery(
+            self.storage,
+            page="2",
+            limit="20",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            body["pagination"],
+            {
+                "page": 2,
+                "page_size": 20,
+                "total": 55,
+                "total_pages": 3,
+                "start": 21,
+                "end": 40,
+            },
+        )
+        self.assertEqual(len(body["sites"]), 20)
+
     def test_login_and_stats(self):
         self.seed()
         auth = AdminAuth(Settings(admin_password_hash=hash_password("open sesame 123"), secret_key="k" * 40))

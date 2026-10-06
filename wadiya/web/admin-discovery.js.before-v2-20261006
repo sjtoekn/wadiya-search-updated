@@ -1,0 +1,188 @@
+(function () {
+  'use strict';
+
+  var $ = function (id) {
+    return document.getElementById(id);
+  };
+
+  function el(tag, text) {
+    var node = document.createElement(tag);
+    if (text != null) node.textContent = String(text);
+    return node;
+  }
+
+  function fmt(value) {
+    return value == null || value === '' ? '—' : String(value);
+  }
+
+  function date(value) {
+    if (!value) return '—';
+    var d = new Date(value);
+    return Number.isNaN(d.getTime())
+      ? value
+      : new Intl.DateTimeFormat(undefined, {
+          dateStyle: 'medium',
+          timeStyle: 'short'
+        }).format(d);
+  }
+
+  function safeUrl(value) {
+    return /^https?:\/\//i.test(value || '') ? value : null;
+  }
+
+  function setStatus(message, error) {
+    $('statusMsg').textContent = message || '';
+    $('statusMsg').className = 'status' + (error ? ' error' : '');
+  }
+
+  function renderSummary(stats) {
+    var summary = $('summary');
+    summary.textContent = '';
+
+    var status = stats.by_status || {};
+
+    [
+      ['Total discovered', stats.total || 0],
+      ['Pending', status.pending || 0],
+      ['Active', status.active || 0],
+      ['Failed', status.failed || 0],
+      ['Robots blocked', status.robots_blocked || 0]
+    ].forEach(function (item) {
+      var card = el('div');
+      card.className = 'card';
+      card.appendChild(el('div', item[1].toLocaleString()));
+      card.firstChild.className = 'n';
+      card.appendChild(el('div', item[0])).className = 'l';
+      summary.appendChild(card);
+    });
+
+    var source = $('source');
+    var current = source.value;
+    source.textContent = '';
+
+    source.appendChild(el('option', 'All sources')).value = '';
+
+    Object.keys(stats.by_source || {}).sort().forEach(function (name) {
+      var option = el('option', name + ' (' + stats.by_source[name] + ')');
+      option.value = name;
+      source.appendChild(option);
+    });
+
+    source.value = current;
+  }
+
+  function renderRows(sites) {
+    var tbody = $('rows');
+    tbody.textContent = '';
+
+    if (!sites.length) {
+      var empty = el('tr');
+      var cell = el('td', 'No discovery records found.');
+      cell.colSpan = 9;
+      empty.appendChild(cell);
+      tbody.appendChild(empty);
+      return;
+    }
+
+    sites.forEach(function (site) {
+      var row = el('tr');
+
+      var urlCell = el('td');
+      var href = safeUrl(site.url);
+      if (href) {
+        var link = el('a', site.url);
+        link.href = href;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer nofollow';
+        urlCell.appendChild(link);
+      } else {
+        urlCell.textContent = fmt(site.url);
+      }
+      row.appendChild(urlCell);
+
+      [
+        site.domain,
+        site.source,
+        site.status,
+        date(site.first_seen_at),
+        date(site.last_crawled_at),
+        site.failure_count,
+        date(site.next_attempt_at),
+        site.last_error
+      ].forEach(function (value) {
+        row.appendChild(el('td', fmt(value)));
+      });
+
+      tbody.appendChild(row);
+    });
+  }
+
+  function load() {
+    var params = new URLSearchParams();
+
+    if ($('q').value.trim()) params.set('q', $('q').value.trim());
+    if ($('status').value) params.set('status', $('status').value);
+    if ($('source').value) params.set('source', $('source').value);
+    params.set('limit', '200');
+
+    setStatus('Loading…');
+
+    fetch('/api/admin/discovery?' + params.toString(), {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' }
+    })
+      .then(function (response) {
+        return response.json().catch(function () {
+          return {};
+        }).then(function (body) {
+          return { response: response, body: body };
+        });
+      })
+      .then(function (result) {
+        if (result.response.status === 401) {
+          window.location.href = '/admin';
+          return;
+        }
+
+        if (!result.response.ok) {
+          throw new Error(
+            result.body.error && result.body.error.message
+              ? result.body.error.message
+              : 'Could not load discovery data.'
+          );
+        }
+
+        renderSummary(result.body.stats);
+        renderRows(result.body.sites);
+        setStatus('');
+        $('updated').textContent =
+          'Updated ' + new Date().toLocaleTimeString();
+      })
+      .catch(function (error) {
+        setStatus(error.message || 'Could not load discovery data.', true);
+      });
+  }
+
+  $('filters').addEventListener('submit', function (event) {
+    event.preventDefault();
+    load();
+  });
+
+  $('clear').addEventListener('click', function () {
+    $('q').value = '';
+    $('status').value = '';
+    $('source').value = '';
+    load();
+  });
+
+  $('logout').addEventListener('click', function () {
+    fetch('/api/admin/logout', {
+      method: 'POST',
+      credentials: 'same-origin'
+    }).then(function () {
+      window.location.href = '/admin';
+    });
+  });
+
+  load();
+})();

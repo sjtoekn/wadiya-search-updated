@@ -90,6 +90,37 @@ class RankingTests(SearchStackCase):
         self.assertLess(order.index(many), order.index(body))   # higher tf / shorter doc beats a single mention
         self.assertTrue(all(ranked[i].score >= ranked[i + 1].score for i in range(len(ranked) - 1)))
 
+    def test_url_and_domain_fields_are_searchable_and_weighted(self):
+        url_hit = self.add(
+            url="https://example.org/wadi",
+            domain="example.org",
+            title="Unrelated page",
+            content="short page",
+        )
+        body_hit = self.add(
+            url="https://example.org/body",
+            domain="example.org",
+            title="Unrelated page",
+            content="wadi",
+        )
+        self.build()
+
+        q = parse_query("wadi")
+        ranked = self.ranker.rank(
+            q,
+            self.indexer.search(
+                q,
+                10,
+                weights=self.ranker.field_weights,
+            ).hits,
+        )
+
+        order = [h.doc_id for h in ranked]
+
+        self.assertIn(url_hit, order)
+        self.assertIn(body_hit, order)
+        self.assertLess(order.index(url_hit), order.index(body_hit))
+
     def test_deterministic_ties(self):
         for i in range(3):
             self.add(url=f"https://e.org/{i}", content=f"same words tie{i % 1}", chash=f"h{i}")
@@ -134,6 +165,27 @@ class ServiceTests(SearchStackCase):
         self.seed(2)
         r = self.svc.search("unique0 nonexistentword")
         self.assertEqual((r["match"], r["result_count"]), ("any", 1))
+
+    def test_all_terms_are_preferred_before_any_term_fallback(self):
+        self.add(
+            url="https://e.org/all",
+            title="All terms",
+            content="alpha beta common",
+            chash="all",
+        )
+        self.add(
+            url="https://e.org/partial",
+            title="Partial terms",
+            content="alpha common",
+            chash="partial",
+        )
+        self.build()
+
+        r = self.svc.search("alpha beta")
+
+        self.assertEqual(r["match"], "all")
+        self.assertEqual(r["result_count"], 1)
+        self.assertEqual([x["url"] for x in r["results"]], ["https://e.org/all"])
 
     def test_empty_and_invalid_queries(self):
         for q in ["", "   ", "!!!", "x" * 500, None]:

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Wadiya admin – Discovery</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="admin">
+  <main class="admin-discovery-page">
+    <div class="toolbar">
+      <div>
+        <a href="/admin">← Developer dashboard</a>
+        <h1>Discovery dashboard</h1>
+      </div>
+      <button id="logout" type="button">Sign out</button>
+    </div>
+
+    <section id="summary" class="cards"></section>
+
+    <section class="admin-discovery-filters">
+      <form id="filters">
+        <input id="q" type="search" placeholder="Search domain or URL">
+        <select id="status">
+          <option value="">All statuses</option>
+          <option value="pending">Pending</option>
+          <option value="active">Active</option>
+          <option value="failed">Failed</option>
+          <option value="robots_blocked">Robots blocked</option>
+          <option value="skipped">Skipped</option>
+        </select>
+        <select id="source">
+          <option value="">All sources</option>
+        </select>
+        <button type="submit">Filter</button>
+        <button id="clear" type="button">Clear</button>
+      </form>
+    </section>
+
+    <p id="statusMsg" class="status"></p>
+
+    <section class="tablewrap">
+      <table>
+        <thead>
+          <tr>
+            <th>URL</th>
+            <th>Domain</th>
+            <th>Source</th>
+            <th>Status</th>
+            <th>First seen</th>
+            <th>Last crawled</th>
+            <th>Failures</th>
+            <th>Next retry</th>
+            <th>Last error</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </section>
+
+    <p id="updated" class="status"></p>
+  </main>
+
+  <script src="/static/admin-discovery.js"></script>
+</body>
+</html>

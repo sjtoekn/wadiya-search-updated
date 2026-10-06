@@ -49,6 +49,80 @@ class ApiHttpTests(SearchStackCase):
         self.client.cookies.set("wadiya_admin", "forged.token.value")
         self.assertEqual(self.client.get("/api/admin/stats").status_code, 401)
 
+    def test_admin_discovery_requires_auth(self):
+        r = self.client.get("/api/admin/discovery")
+        self.assertEqual(r.status_code, 401)
+
+    def test_admin_discovery_authenticated(self):
+        c = self.client
+
+        login = c.post("/api/admin/login", json={"password": PW})
+        self.assertEqual(login.status_code, 200)
+
+        r = c.get("/api/admin/discovery")
+        self.assertEqual(r.status_code, 200)
+
+        body = r.json()
+        self.assertIn("stats", body)
+        self.assertIn("sites", body)
+        self.assertEqual(body["stats"]["total"], 0)
+        self.assertEqual(body["sites"], [])
+
+    def test_admin_discovery_validation(self):
+        c = self.client
+
+        self.assertEqual(
+            c.post("/api/admin/login", json={"password": PW}).status_code,
+            200,
+        )
+
+        cases = (
+            "/api/admin/discovery?status=robots_blocked",
+            "/api/admin/discovery?status=unknown",
+            "/api/admin/discovery?source=bad%20source",
+            "/api/admin/discovery?limit=abc",
+            "/api/admin/discovery?limit=10",
+            "/api/admin/discovery?page=0",
+            "/api/admin/discovery?page=abc",
+        )
+
+        for url in cases:
+            r = c.get(url)
+            self.assertEqual(r.status_code, 400, url)
+            self.assertIn("message", r.json()["error"])
+
+    def test_admin_discovery_pagination_response(self):
+        c = self.client
+
+        self.assertEqual(
+            c.post("/api/admin/login", json={"password": PW}).status_code,
+            200,
+        )
+
+        for i in range(55):
+            self.storage.register_discovered_site(
+                f"https://site{i}.example/",
+                "site.example",
+                source="link",
+            )
+
+        r = c.get("/api/admin/discovery?page=2&limit=20")
+        self.assertEqual(r.status_code, 200)
+
+        body = r.json()
+        self.assertEqual(
+            body["pagination"],
+            {
+                "page": 2,
+                "page_size": 20,
+                "total": 55,
+                "total_pages": 3,
+                "start": 21,
+                "end": 40,
+            },
+        )
+        self.assertEqual(len(body["sites"]), 20)
+
     def test_admin_login_flow_and_cookie_flags(self):
         c = self.client
         self.assertEqual(c.post("/api/admin/login", json={"password": "bad"}).status_code, 401)

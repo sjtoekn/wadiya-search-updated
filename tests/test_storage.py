@@ -93,6 +93,101 @@ class V1MigrationTests(TempDirCase):
         self.assertIn("status", discovered_cols)
 
 
+class DiscoveryAdminStorageTests(TempDirCase):
+    def _seed_discovery(self):
+        s = self.storage
+
+        s.register_discovered_site(
+            "https://alpha.example/",
+            "alpha.example",
+            source="link",
+        )
+        s.register_discovered_site(
+            "https://beta.example/",
+            "beta.example",
+            source="sitemap",
+        )
+        s.register_discovered_site(
+            "https://alpha.example/about",
+            "alpha.example",
+            source="link",
+        )
+
+        s.mark_discovered_site_crawled(
+            "https://alpha.example/",
+            success=True,
+        )
+        s.mark_discovered_site_crawled(
+            "https://beta.example/",
+            success=False,
+            error="connection failed",
+        )
+
+    def test_discovery_registry_stats(self):
+        self._seed_discovery()
+
+        stats = self.storage.discovery_registry_stats()
+
+        self.assertEqual(stats["total"], 3)
+        self.assertEqual(
+            stats["by_source"],
+            {"link": 2, "sitemap": 1},
+        )
+        self.assertEqual(
+            stats["by_status"],
+            {"active": 1, "failed": 1, "pending": 1},
+        )
+
+    def test_list_discovered_sites_admin_filters(self):
+        self._seed_discovery()
+
+        rows = self.storage.list_discovered_sites_admin(limit=100)
+        self.assertEqual(len(rows), 3)
+
+        failed = self.storage.list_discovered_sites_admin(
+            status="failed",
+            limit=100,
+        )
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["domain"], "beta.example")
+        self.assertEqual(failed[0]["last_error"], "connection failed")
+
+        sitemap = self.storage.list_discovered_sites_admin(
+            source="sitemap",
+            limit=100,
+        )
+        self.assertEqual(len(sitemap), 1)
+        self.assertEqual(sitemap[0]["url"], "https://beta.example/")
+
+        about = self.storage.list_discovered_sites_admin(
+            query="about",
+            limit=100,
+        )
+        self.assertEqual(len(about), 1)
+        self.assertEqual(about[0]["url"], "https://alpha.example/about")
+
+    def test_list_discovered_sites_admin_limit(self):
+        self._seed_discovery()
+
+        rows = self.storage.list_discovered_sites_admin(limit=2)
+
+        self.assertEqual(len(rows), 2)
+
+        rows = self.storage.list_discovered_sites_admin(
+            limit=1,
+            offset=1,
+        )
+        self.assertEqual(len(rows), 1)
+
+        total = self.storage.count_discovered_sites_admin()
+        self.assertEqual(total, 3)
+
+        total = self.storage.count_discovered_sites_admin(
+            source="sitemap",
+        )
+        self.assertEqual(total, 1)
+
+
 class StorageTests(TempDirCase):
     def test_insert_and_get(self):
         r = self.storage.save_document(make_doc())

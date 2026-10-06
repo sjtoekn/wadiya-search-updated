@@ -1,0 +1,77 @@
+"""Framework-independent request handlers: (status, json-body). FastAPI only wires these up."""
+from __future__ import annotations
+
+from ..admin.dashboard import build_stats
+from ..search.service import InvalidSearchRequest
+
+
+def error(status: int, message: str) -> tuple:
+    return status, {"error": {"code": status, "message": message}}
+
+
+def parse_page(raw) -> int:
+    if raw is None or raw == "":
+        return 1
+    if not isinstance(raw, str) or not raw.isascii() or not raw.isdigit() or len(raw) > 4:
+        raise InvalidSearchRequest("page must be a positive integer")
+    return int(raw)
+
+
+def handle_search(service, q, page_raw) -> tuple:
+    try:
+        return 200, service.search(q, parse_page(page_raw))
+    except InvalidSearchRequest as e:
+        return error(400, str(e))
+
+
+def handle_login(auth, password, client_key: str) -> tuple:
+    status, message, token = auth.login(password, client_key)
+    return (status, {"ok": True}, token) if status == 200 else (*error(status, message), None)
+
+
+def handle_stats(storage, indexer) -> tuple:
+    return 200, build_stats(storage, indexer)
+
+
+def handle_page(storage, url: str) -> tuple:
+    if not isinstance(url, str):
+        return error(400, "url is required")
+
+    url = url.strip()
+    if not url:
+        return error(400, "url is required")
+
+    page = storage.get_document_by_url(url)
+    if page is None:
+        return error(404, "page not found")
+
+    return 200, {
+        "url": page.url,
+        "canonical_url": page.canonical_url,
+        "domain": page.domain,
+        "title": page.title,
+        "description": page.description,
+        "headings": page.headings,
+        "content": page.content,
+        "language": page.language,
+        "crawled_at": page.crawled_at,
+        "updated_at": page.updated_at,
+    }
+
+
+def handle_discovery(storage, domain: str) -> tuple:
+    if not isinstance(domain, str):
+        return error(400, "domain is required")
+
+    domain = domain.strip().lower().rstrip(".")
+    if not domain:
+        return error(400, "domain is required")
+
+    if len(domain) > 253 or any(ch.isspace() for ch in domain):
+        return error(400, "invalid domain")
+
+    result = storage.get_domain_discovery(domain)
+    if result is None:
+        return error(404, "website not found")
+
+    return 200, result

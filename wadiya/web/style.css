@@ -249,6 +249,47 @@ body.home .lede strong {
   font: var(--weight-medium) var(--text-display)/var(--line-heading) var(--serif);
 }
 
+/* Wadiya home philosophy */
+body.home .home-philosophy {
+  width: min(100% - 2rem, 42rem);
+  margin: 0 auto var(--space-8);
+  padding-top: var(--space-6);
+  border-top: var(--border-thin) solid var(--line);
+  color: var(--muted);
+  text-align: center;
+}
+
+body.home .home-philosophy h2 {
+  margin: 0 0 var(--space-3);
+  color: var(--ink);
+  font: var(--weight-medium) var(--text-heading)/var(--line-heading) var(--serif);
+  letter-spacing: -.02em;
+}
+
+body.home .home-philosophy p {
+  margin: 0 0 var(--space-3);
+  line-height: 1.65;
+}
+
+body.home .home-philosophy ul {
+  display: grid;
+  gap: .45rem;
+  margin: var(--space-5) auto;
+  padding: 0;
+  list-style: none;
+}
+
+body.home .home-philosophy li {
+  color: var(--ink);
+}
+
+body.home .home-philosophy-tagline {
+  margin-top: var(--space-5) !important;
+  color: var(--ink);
+  font-family: var(--serif);
+}
+
+
 body.home #pager,
 body.home #results {
   display: none;
@@ -538,3 +579,294 @@ body:not(.home) main { max-width: 52rem; }
   }
 }
 
+
+/* ---------------------------------------------------------------
+   Admin discovery dashboard
+   --------------------------------------------------------------- */
+.admin-discovery-page {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 2rem;
+}
+
+.admin-discovery-page .toolbar {
+  align-items: flex-start;
+}
+
+.admin-discovery-page .toolbar a {
+  color: inherit;
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+.admin-discovery-filters {
+  margin: 1.5rem 0;
+  padding: 1rem;
+  background: var(--color-white, #fff);
+  border: 1px solid #dfe5e8;
+  border-radius: 14px;
+}
+
+.admin-discovery-filters form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.admin-discovery-filters input,
+.admin-discovery-filters select,
+.admin-discovery-filters button {
+  min-height: 2.6rem;
+  border: 1px solid #d7dfe3;
+  border-radius: 9px;
+  padding: 0 0.8rem;
+  background: #fff;
+}
+
+.admin-discovery-filters input {
+  flex: 1 1 20rem;
+}
+
+.admin-discovery-filters button {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.admin-discovery-page .tablewrap {
+  overflow-x: auto;
+}
+
+.admin-discovery-page table {
+  min-width: 1200px;
+}
+
+.admin-discovery-page td {
+  max-width: 360px;
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+
+.admin-discovery-page td a {
+  color: inherit;
+}
+
+.admin-discovery-page td:nth-child(4) {
+  font-weight: 600;
+}
+
+@media (max-width: 700px) {
+  .admin-discovery-page {
+    padding: 1rem;
+  }
+
+  .admin-discovery-filters form {
+    flex-direction: column;
+  }
+
+  .admin-discovery-filters input,
+  .admin-discovery-filters select,
+  .admin-discovery-filters button {
+    width: 100%;
+  }
+}
+
+
+/* Discovery dashboard pagination and admin navigation */
+.admin-nav {
+  margin: 0.45rem 0 0;
+}
+
+.admin-nav a {
+  color: inherit;
+  font-size: 0.9rem;
+  text-decoration: none;
+  opacity: 0.82;
+}
+
+.admin-nav a:hover {
+  text-decoration: underline;
+  opacity: 1;
+}
+
+.admin-discovery-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+.admin-discovery-pagination > .status {
+  margin: 0;
+}
+
+.admin-discovery-page-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.admin-discovery-page-controls button {
+  min-height: 2.4rem;
+  border: 1px solid #d7dfe3;
+  border-radius: 9px;
+  padding: 0 0.8rem;
+  background: #fff;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.admin-discovery-page-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+#pageInfo {
+  min-width: 8rem;
+  text-align: center;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+@media (max-width: 700px) {
+  .admin-discovery-pagination {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .admin-discovery-page-controls {
+    justify-content: space-between;
+  }
+
+  #pageInfo {
+    min-width: auto;
+  }
+}
+
+/* ---------------------------------------------------------------
+   Admin discovery dashboard — final layout
+   --------------------------------------------------------------- */
+
+body.admin main.admin-discovery-page {
+  width: min(1440px, calc(100vw - 48px));
+  max-width: 1440px;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 2.25rem 2rem 3rem;
+  box-sizing: border-box;
+}
+
+body.admin main.admin-discovery-page .tablewrap {
+  width: 100%;
+  max-width: none;
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+}
+
+body.admin main.admin-discovery-page table {
+  width: 100%;
+  min-width: 1280px;
+  table-layout: fixed;
+}
+
+body.admin main.admin-discovery-page th,
+body.admin main.admin-discovery-page td {
+  box-sizing: border-box;
+  line-height: 1.45;
+  vertical-align: top;
+}
+
+body.admin main.admin-discovery-page th {
+  white-space: nowrap;
+}
+
+body.admin main.admin-discovery-page td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+body.admin main.admin-discovery-page th:nth-child(1),
+body.admin main.admin-discovery-page td:nth-child(1) {
+  width: 23%;
+}
+
+body.admin main.admin-discovery-page th:nth-child(2),
+body.admin main.admin-discovery-page td:nth-child(2) {
+  width: 11%;
+}
+
+body.admin main.admin-discovery-page th:nth-child(3),
+body.admin main.admin-discovery-page td:nth-child(3) {
+  width: 8%;
+}
+
+body.admin main.admin-discovery-page th:nth-child(4),
+body.admin main.admin-discovery-page td:nth-child(4) {
+  width: 8%;
+  white-space: nowrap;
+}
+
+body.admin main.admin-discovery-page th:nth-child(5),
+body.admin main.admin-discovery-page td:nth-child(5) {
+  width: 11%;
+}
+
+body.admin main.admin-discovery-page th:nth-child(6),
+body.admin main.admin-discovery-page td:nth-child(6) {
+  width: 11%;
+}
+
+body.admin main.admin-discovery-page th:nth-child(7),
+body.admin main.admin-discovery-page td:nth-child(7) {
+  width: 6%;
+  white-space: nowrap;
+}
+
+body.admin main.admin-discovery-page th:nth-child(8),
+body.admin main.admin-discovery-page td:nth-child(8) {
+  width: 10%;
+}
+
+body.admin main.admin-discovery-page th:nth-child(9),
+body.admin main.admin-discovery-page td:nth-child(9) {
+  width: 12%;
+  color: #68757d;
+}
+
+body.admin main.admin-discovery-page td:nth-child(1) a {
+  display: inline;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+@media (max-width: 1488px) {
+  body.admin main.admin-discovery-page {
+    width: calc(100vw - 32px);
+  }
+}
+
+@media (max-width: 700px) {
+  body.admin main.admin-discovery-page {
+    width: calc(100vw - 24px);
+    max-width: none;
+    padding: 1.25rem 1rem 2rem;
+  }
+}
+
+/* Admin dashboard — wide desktop shell */
+body.admin main:not(.admin-discovery-page) {
+  width: min(1440px, calc(100vw - 48px));
+  max-width: 1440px;
+  margin-left: auto;
+  margin-right: auto;
+  box-sizing: border-box;
+}
+
+@media (max-width: 700px) {
+  body.admin main:not(.admin-discovery-page) {
+    width: calc(100vw - 24px);
+    max-width: none;
+  }
+}

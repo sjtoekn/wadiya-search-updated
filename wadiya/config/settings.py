@@ -3,6 +3,51 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
+
+
+_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+
+
+def _load_dotenv() -> None:
+    """Load local .env values without overriding real environment variables."""
+    if not _ENV_FILE.is_file():
+        return
+
+    try:
+        lines = _ENV_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+
+    for raw in lines:
+        line = raw.strip()
+
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        name, value = line.split("=", 1)
+        name = name.strip()
+
+        if not name or name not in {
+            "WADIYA_DB_PATH",
+            "WADIYA_INDEX_PATH",
+            "WADIYA_SEEDS_PATH",
+            "WADIYA_USER_AGENT",
+            "WADIYA_ADMIN_PASSWORD_HASH",
+            "WADIYA_SECRET_KEY",
+            "WADIYA_COOKIE_SECURE",
+        }:
+            continue
+
+        value = value.strip()
+
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+
+        os.environ.setdefault(name, value)
+
+
+_load_dotenv()
 
 
 def _env_bool(name: str, default: bool) -> bool:

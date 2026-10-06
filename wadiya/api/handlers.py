@@ -33,6 +33,85 @@ def handle_stats(storage, indexer) -> tuple:
     return 200, build_stats(storage, indexer)
 
 
+def handle_admin_discovery(
+    storage,
+    *,
+    status: str | None = None,
+    source: str | None = None,
+    query: str | None = None,
+    page: str | None = None,
+    limit: str | None = None,
+) -> tuple:
+    allowed_statuses = {
+        "pending",
+        "active",
+        "failed",
+    }
+
+    if status:
+        status = status.strip().lower()
+        if status not in allowed_statuses:
+            return error(400, "invalid status")
+
+    if source:
+        source = source.strip().lower()
+        if len(source) > 100 or any(ch.isspace() for ch in source):
+            return error(400, "invalid source")
+
+    if query is not None:
+        query = query.strip()
+        if len(query) > 253:
+            return error(400, "query is too long")
+        query = query or None
+
+    try:
+        parsed_page = int(page) if page else 1
+        parsed_limit = int(limit) if limit else 50
+    except (TypeError, ValueError):
+        return error(400, "page and limit must be positive integers")
+
+    if parsed_page < 1:
+        return error(400, "page must be a positive integer")
+
+    if parsed_limit not in (20, 50, 100):
+        return error(400, "limit must be 20, 50, or 100")
+
+    total = storage.count_discovered_sites_admin(
+        status=status,
+        source=source,
+        query=query,
+    )
+
+    total_pages = (total + parsed_limit - 1) // parsed_limit
+    offset = (parsed_page - 1) * parsed_limit
+
+    sites = []
+    if offset < total:
+        sites = storage.list_discovered_sites_admin(
+            status=status,
+            source=source,
+            query=query,
+            limit=parsed_limit,
+            offset=offset,
+        )
+
+    start = offset + 1 if sites else 0
+    end = offset + len(sites) if sites else 0
+
+    return 200, {
+        "stats": storage.discovery_registry_stats(),
+        "sites": sites,
+        "pagination": {
+            "page": parsed_page,
+            "page_size": parsed_limit,
+            "total": total,
+            "total_pages": total_pages,
+            "start": start,
+            "end": end,
+        },
+    }
+
+
 def handle_page(storage, url: str) -> tuple:
     if not isinstance(url, str):
         return error(400, "url is required")

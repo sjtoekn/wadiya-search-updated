@@ -473,6 +473,104 @@ class SQLiteStorage(Storage):
 
             return [dict(row) for row in rows]
 
+    def discovery_registry_stats(self) -> dict:
+        """Return aggregate counts for the admin discovery dashboard."""
+        with self._conn() as c:
+            total = c.execute(
+                "SELECT COUNT(*) FROM discovered_sites"
+            ).fetchone()[0]
+
+            status_rows = c.execute(
+                "SELECT status, COUNT(*) AS count "
+                "FROM discovered_sites GROUP BY status ORDER BY status"
+            ).fetchall()
+
+            source_rows = c.execute(
+                "SELECT source, COUNT(*) AS count "
+                "FROM discovered_sites GROUP BY source ORDER BY source"
+            ).fetchall()
+
+            return {
+                "total": total,
+                "by_status": {
+                    row["status"]: row["count"] for row in status_rows
+                },
+                "by_source": {
+                    row["source"]: row["count"] for row in source_rows
+                },
+            }
+
+    def list_discovered_sites_admin(
+        self,
+        *,
+        status: str | None = None,
+        source: str | None = None,
+        query: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list:
+        """List discovery registry rows for the admin dashboard."""
+        limit = max(1, min(int(limit), 100))
+        offset = max(0, int(offset))
+
+        where = []
+        params = []
+
+        if status:
+            where.append("status=?")
+            params.append(status)
+
+        if source:
+            where.append("source=?")
+            params.append(source)
+
+        if query:
+            like = "%" + query.strip() + "%"
+            where.append("(url LIKE ? OR domain LIKE ?)")
+            params.extend([like, like])
+
+        sql = "SELECT * FROM discovered_sites"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+
+        sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        with self._conn() as c:
+            rows = c.execute(sql, params).fetchall()
+            return [dict(row) for row in rows]
+
+    def count_discovered_sites_admin(
+        self,
+        *,
+        status: str | None = None,
+        source: str | None = None,
+        query: str | None = None,
+    ) -> int:
+        """Count discovery registry rows matching admin filters."""
+        where = []
+        params = []
+
+        if status:
+            where.append("status=?")
+            params.append(status)
+
+        if source:
+            where.append("source=?")
+            params.append(source)
+
+        if query:
+            like = "%" + query.strip() + "%"
+            where.append("(url LIKE ? OR domain LIKE ?)")
+            params.extend([like, like])
+
+        sql = "SELECT COUNT(*) FROM discovered_sites"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+
+        with self._conn() as c:
+            return int(c.execute(sql, params).fetchone()[0])
+
     def mark_discovered_site_crawled(
         self,
         url: str,

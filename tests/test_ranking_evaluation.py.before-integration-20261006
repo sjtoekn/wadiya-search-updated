@@ -1,0 +1,18 @@
+import unittest
+
+from wadiya.ranking.evaluation import mean_reciprocal_rank, precision_at_k
+
+
+class RankingEvaluationTests(unittest.TestCase):
+    def test_precision_at_k(self):
+        self.assertEqual(precision_at_k(["a", "b", "c"], {"a", "c"}, 3), 2 / 3)
+        self.assertEqual(precision_at_k(["a", "b"], {"a"}, 1), 1.0)
+        self.assertEqual(precision_at_k([], {"a"}, 10), 0.0)
+
+    def test_mean_reciprocal_rank(self):
+        self.assertEqual(mean_reciprocal_rank([["a", "b"], ["x", "b"], ["x", "y"]], [{"a"}, {"b"}, {"z"}]), (1.0 + 0.5 + 0.0) / 3)
+        self.assertEqual(mean_reciprocal_rank([], []), 0.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

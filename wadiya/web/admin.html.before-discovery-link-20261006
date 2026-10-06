@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Wadiya admin</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="admin">
+  <section id="loginView" class="login" hidden>
+    <h1>Wadiya admin</h1>
+    <form id="loginForm">
+      <label for="pw">Password</label>
+      <input id="pw" type="password" autocomplete="current-password" maxlength="256" required>
+      <button type="submit">Sign in</button>
+      <p id="loginMsg" class="status error" role="alert"></p>
+    </form>
+  </section>
+  <main id="dash" hidden>
+    <div class="toolbar"><h1>Developer dashboard</h1><button id="logout" type="button">Sign out</button></div>
+    <div id="cards" class="cards"></div>
+    <h2>Crawler</h2><div id="crawler" class="tablewrap"></div>
+    <h2>Recent crawl errors</h2><div id="errors" class="tablewrap"></div>
+    <h2>Recent searches</h2><div id="queries" class="tablewrap"></div>
+    <h2>Index</h2><div id="index" class="tablewrap"></div>
+    <p class="status" id="updated"></p>
+  </main>
+  <script src="/static/admin.js"></script>
+</body>
+</html>

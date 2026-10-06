@@ -128,6 +128,24 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None) -> FastAP
         status, body = handlers.handle_stats(storage, indexer)
         return JSONResponse(body, status_code=status)
 
+    @app.get("/api/admin/discovery", dependencies=[Depends(require_admin)])
+    def admin_discovery(
+        status: str = "",
+        source: str = "",
+        q: str = "",
+        page: str = "1",
+        limit: str = "50",
+    ):
+        code, body = handlers.handle_admin_discovery(
+            storage,
+            status=status or None,
+            source=source or None,
+            query=q or None,
+            page=page,
+            limit=limit,
+        )
+        return JSONResponse(body, status_code=code)
+
     # ------------------------------------------------------------------ pages
     @app.get("/", include_in_schema=False)
     def home():
@@ -144,6 +162,10 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None) -> FastAP
     @app.get("/admin", include_in_schema=False)
     def admin_page():          # static shell only; every data endpoint above is protected
         return FileResponse(WEB_DIR / "admin.html")
+
+    @app.get("/admin/discovery", include_in_schema=False)
+    def admin_discovery_page():
+        return FileResponse(WEB_DIR / "admin-discovery.html")
 
     app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
     return app

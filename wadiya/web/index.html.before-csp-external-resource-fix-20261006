@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wadiya.com</title>
+  <meta name="description" content="Wadiya.com — discover the web.">
+  <link rel="canonical" href="https://wadiya.com/">
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="home">
+  <div class="flow" id="flow" hidden></div>
+  <header class="top">
+    <a class="mark" href="/" id="markLink" aria-label="Wadiya.com home">wadiya<span>.com</span></a>
+    <div class="home-intro">
+      <h1>Discover the web.</h1>
+      <p class="home-copy">Find websites, topics, places, businesses, and pages worth exploring.</p>
+    </div>
+    <form id="searchForm" class="box" role="search" autocomplete="off">
+      <input id="q" name="q" type="search" maxlength="200" placeholder="Search a website, topic, place, or business" aria-label="Search a website, topic, place, or business" autofocus>
+      <button type="submit">Discover</button>
+    </form>
+    <p class="home-hint">Try a website, a topic, a place, or something you want to explore.</p>
+    <svg class="channel" viewBox="0 0 600 24" preserveAspectRatio="none" aria-hidden="true">
+      <path d="M0 14 C 60 2, 110 24, 170 12 S 280 2, 340 13 S 450 24, 510 11 S 580 8, 600 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </svg>
+  </header>
+  <main>
+    <p class="lede">Wadiya searches the web it has discovered so you can explore what is beyond the search box.</p>
+
+    <section class="home-philosophy" aria-labelledby="philosophy-title">
+      <h2 id="philosophy-title">Search the Web. Don't Replace It.</h2>
+      <p>Wadiya helps you discover what you need across the web.</p>
+
+      <ul>
+        <li><strong>Organic results stay organic.</strong></li>
+        <li><strong>Ads stay separate.</strong></li>
+        <li><strong>AI helps — it doesn't replace the web.</strong></li>
+      </ul>
+
+      <p class="home-philosophy-tagline"><strong>Wadiya — helping people discover the web, not replacing it.</strong></p>
+    </section>
+
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+    <div id="results" class="results"></div>
+    <nav id="pager" class="pager" aria-label="Pagination"></nav>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

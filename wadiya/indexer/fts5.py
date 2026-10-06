@@ -30,9 +30,28 @@ class FTS5Indexer(Indexer):
     def init(self) -> None:
         with self._conn() as c:
             c.execute("PRAGMA journal_mode=WAL")
+
+            existing = c.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='table' AND name='docs_fts'"
+            ).fetchone()
+
+            if existing and "url UNINDEXED" in (existing["sql"] or ""):
+                c.execute(
+                    "CREATE VIRTUAL TABLE docs_fts_new USING fts5("
+                    "title, headings, description, body, url, domain, "
+                    f"tokenize='{TOKENIZER}')"
+                )
+                c.execute(
+                    "INSERT INTO docs_fts_new(rowid,title,headings,description,body,url,domain) "
+                    "SELECT rowid,title,headings,description,body,url,domain FROM docs_fts"
+                )
+                c.execute("DROP TABLE docs_fts")
+                c.execute("ALTER TABLE docs_fts_new RENAME TO docs_fts")
+
             c.execute(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5("
-                "title, headings, description, body, url UNINDEXED, domain UNINDEXED, "
+                "title, headings, description, body, url, domain, "
                 f"tokenize='{TOKENIZER}')")
 
     # rowid == document id, so replace/remove are O(log n)
@@ -82,9 +101,21 @@ class FTS5Indexer(Indexer):
                 total = c.execute("SELECT count(*) FROM (SELECT 1 FROM docs_fts WHERE docs_fts MATCH ? LIMIT ?)",
                                   (match, count_cap)).fetchone()[0]
                 rows = c.execute(
-                    "SELECT rowid AS doc_id, title, url, domain, bm25(docs_fts, ?, ?, ?, ?, 0, 0) AS bm "
+                    "SELECT rowid AS doc_id, title, url, domain, "
+                    "bm25(docs_fts, ?, ?, ?, ?, ?, ?) AS bm "
                     "FROM docs_fts WHERE docs_fts MATCH ? ORDER BY bm LIMIT ? OFFSET ?",
-                    (w["title"], w["headings"], w["description"], w["body"], match, limit, offset)).fetchall()
+                    (
+                        w["title"],
+                        w["headings"],
+                        w["description"],
+                        w["body"],
+                        w["url"],
+                        w["domain"],
+                        match,
+                        limit,
+                        offset,
+                    ),
+                ).fetchall()
         except sqlite3.OperationalError:
             return SearchHits(0, False, [])
         return SearchHits(total, total >= count_cap,
