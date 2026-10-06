@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from ..admin.dashboard import build_stats
 from ..search.service import InvalidSearchRequest
-from ..crawler.urls import normalize_url, site_key, looks_crawlable
+from ..crawler.urls import normalize_url, site_key, looks_crawlable, is_safe_submission_target
 
 
 def error(status: int, message: str) -> tuple:
@@ -130,6 +130,9 @@ def handle_submit_website(storage, url: str) -> tuple:
 
     if not normalized or not looks_crawlable(normalized):
         return error(400, "invalid or unsupported website URL")
+
+    if not is_safe_submission_target(normalized):
+        return error(400, "unsafe website URL")
 
     domain = site_key(normalized)
 

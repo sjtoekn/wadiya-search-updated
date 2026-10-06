@@ -263,6 +263,24 @@ class ApiHttpTests(SearchStackCase):
 
         self.assertEqual(r.status_code, 400)
 
+    def test_submit_website_rejects_unsafe_urls(self):
+        unsafe_urls = [
+            "http://localhost/",
+            "http://127.0.0.1/",
+            "http://169.254.169.254/",
+            "http://metadata/",
+        ]
+
+        for url in unsafe_urls:
+            with self.subTest(url=url):
+                r = self.client.post(
+                    "/api/submit",
+                    json={"url": url},
+                )
+
+                self.assertEqual(r.status_code, 400)
+                self.assertFalse(r.json().get("ok", False))
+
     def test_submit_website_requires_json(self):
         r = self.client.post(
             "/api/submit",

@@ -88,6 +88,29 @@ def looks_crawlable(url: str) -> bool:
     return dot == -1 or path[dot:] not in SKIP_EXTENSIONS
 
 
+def is_safe_submission_target(url: str) -> bool:
+    """Reject obviously unsafe submission targets without performing DNS."""
+    try:
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https"):
+            return False
+        if parts.username or parts.password or not parts.hostname:
+            return False
+
+        host = parts.hostname.encode("idna").decode("ascii").lower().rstrip(".")
+        if host in BLOCKED_HOSTS or host.endswith(BLOCKED_SUFFIXES):
+            return False
+
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return True
+
+        return ip_is_public(ip)
+    except (ValueError, UnicodeError):
+        return False
+
+
 # ----------------------------------------------------------------------------- SSRF
 @dataclass(frozen=True)
 class UrlPolicy:
