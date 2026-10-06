@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from ..admin.dashboard import build_stats
 from ..search.service import InvalidSearchRequest
+from ..crawler.extractor import extract
+from ..crawler.fetcher import Fetcher
+from ..crawler.keywords import extract_keywords
 from ..crawler.urls import normalize_url, site_key, looks_crawlable, is_safe_submission_target
 
 
@@ -109,6 +112,85 @@ def handle_admin_discovery(
             "total_pages": total_pages,
             "start": start,
             "end": end,
+        },
+    }
+
+
+def handle_preview_website(settings, url: str, fetcher=None) -> tuple:
+    """Safely fetch and analyze a public website without storing or queuing it."""
+    if not isinstance(url, str):
+        return error(400, "url is required")
+
+    raw = url.strip()
+
+    if not raw:
+        return error(400, "url is required")
+
+    if len(raw) > 2048:
+        return error(400, "url is too long")
+
+    normalized = normalize_url(raw)
+
+    if not normalized or not looks_crawlable(normalized):
+        return error(400, "invalid or unsupported website URL")
+
+    if not is_safe_submission_target(normalized):
+        return error(400, "unsafe website URL")
+
+    fetcher = fetcher or Fetcher(settings)
+    result = fetcher.fetch(
+        normalized,
+        max_bytes=settings.max_response_bytes,
+    )
+
+    if result.error:
+        if result.error == "unsafe_url":
+            return error(400, "unsafe website URL")
+
+        if result.error == "timeout":
+            return error(504, "website preview timed out")
+
+        if result.error == "too_large":
+            return error(413, "website page is too large")
+
+        if result.error == "unsupported_content_type":
+            return error(415, "website does not return an HTML page")
+
+        return error(502, "website could not be fetched")
+
+    if result.status is None or not 200 <= result.status < 300:
+        return error(502, "website could not be fetched")
+
+    if result.content_type not in {"text/html", "application/xhtml+xml"}:
+        return error(415, "website does not return an HTML page")
+
+    page = extract(
+        result.body,
+        result.final_url,
+        result.content_type,
+    )
+
+    keywords = extract_keywords(
+        title=page.title,
+        headings=page.headings,
+        description=page.description,
+        content=page.content,
+        limit=12,
+    )
+
+    return 200, {
+        "ok": True,
+        "url": normalized,
+        "final_url": result.final_url,
+        "canonical_url": page.canonical_url,
+        "title": page.title,
+        "description": page.description,
+        "language": page.language,
+        "headings": page.headings,
+        "keywords": keywords,
+        "robots": {
+            "noindex": page.noindex,
+            "nofollow": page.nofollow,
         },
     }
 

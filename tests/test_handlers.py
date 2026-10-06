@@ -2,6 +2,8 @@ from tests.test_search_stack import SearchStackCase
 from wadiya.admin.auth import AdminAuth, hash_password
 from wadiya.api import handlers
 from wadiya.config.settings import Settings
+from wadiya.crawler.fetcher import Fetcher
+from wadiya.crawler.urls import UrlPolicy
 
 
 class HandlerTests(SearchStackCase):
@@ -150,3 +152,173 @@ class HandlerTests(SearchStackCase):
         self.assertEqual(st["search"]["recent_queries"][0]["query"], "wadi")
         self.assertEqual(st["crawler"]["status"], "never run")
         self.assertNotIn("path", st["index"])
+
+
+    def test_preview_website_extracts_metadata_and_keywords(self):
+        from tests.mock_site import MockSite
+
+        html = b"""
+        <!doctype html>
+        <html lang="en">
+        <head>
+          <title>Canadian Travel Guide</title>
+          <meta name="description" content="A practical travel guide to Canada.">
+          <link rel="canonical" href="/travel">
+        </head>
+        <body>
+          <header>Navigation</header>
+          <main>
+            <h1>Canadian Travel Guide</h1>
+            <h2>Travel in Canada</h2>
+            <p>Explore Canadian destinations and travel information.</p>
+          </main>
+          <footer>Footer</footer>
+        </body>
+        </html>
+        """
+
+        settings = Settings(
+            allow_private_networks=True,
+            max_retries=0,
+            request_timeout=3,
+            total_fetch_timeout=5,
+        )
+        fetcher = Fetcher(
+            settings,
+            policy=UrlPolicy(
+                allowed_ports=None,
+                allow_private_networks=True,
+            ),
+        )
+
+        from unittest.mock import patch
+
+        with MockSite({
+            "/": (200, "text/html; charset=utf-8", html, {}),
+        }) as site, patch(
+            "wadiya.api.handlers.is_safe_submission_target",
+            return_value=True,
+        ):
+            status, body = handlers.handle_preview_website(
+                settings,
+                site.base + "/",
+                fetcher=fetcher,
+            )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["title"], "Canadian Travel Guide")
+        self.assertEqual(
+            body["description"],
+            "A practical travel guide to Canada.",
+        )
+        self.assertEqual(body["language"], "en")
+        self.assertEqual(body["canonical_url"], site.base + "/travel")
+        self.assertIn("Canadian Travel Guide", body["headings"])
+        self.assertIn("canadian", body["keywords"])
+        self.assertIn("travel", body["keywords"])
+        self.assertFalse(body["robots"]["noindex"])
+        self.assertFalse(body["robots"]["nofollow"])
+
+    def test_preview_website_does_not_store_or_queue(self):
+        from tests.mock_site import MockSite
+
+        html = b"""
+        <html>
+          <head><title>Preview Only</title></head>
+          <body><h1>Preview Only</h1></body>
+        </html>
+        """
+
+        settings = Settings(
+            allow_private_networks=True,
+            max_retries=0,
+            request_timeout=3,
+            total_fetch_timeout=5,
+        )
+        fetcher = Fetcher(
+            settings,
+            policy=UrlPolicy(
+                allowed_ports=None,
+                allow_private_networks=True,
+            ),
+        )
+
+        from unittest.mock import patch
+
+        with MockSite({
+            "/": (200, "text/html", html, {}),
+        }) as site, patch(
+            "wadiya.api.handlers.is_safe_submission_target",
+            return_value=True,
+        ):
+            before = self.storage.discovery_registry_stats()
+            status, body = handlers.handle_preview_website(
+                settings,
+                site.base + "/",
+                fetcher=fetcher,
+            )
+            after = self.storage.discovery_registry_stats()
+
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(before, after)
+
+    def test_preview_website_rejects_unsafe_url(self):
+        for url in (
+            "http://localhost/",
+            "http://127.0.0.1/",
+            "http://169.254.169.254/",
+            "http://metadata/",
+        ):
+            with self.subTest(url=url):
+                status, body = handlers.handle_preview_website(
+                    Settings(),
+                    url,
+                )
+                self.assertEqual(status, 400)
+                self.assertFalse(body.get("ok", False))
+
+    def test_preview_website_rejects_non_html(self):
+        from tests.mock_site import MockSite
+
+        settings = Settings(
+            allow_private_networks=True,
+            max_retries=0,
+            request_timeout=3,
+            total_fetch_timeout=5,
+        )
+        fetcher = Fetcher(
+            settings,
+            policy=UrlPolicy(
+                allowed_ports=None,
+                allow_private_networks=True,
+            ),
+        )
+
+        from unittest.mock import patch
+
+        with MockSite({
+            "/image": (200, "image/png", b"not html", {}),
+        }) as site, patch(
+            "wadiya.api.handlers.is_safe_submission_target",
+            return_value=True,
+        ):
+            status, body = handlers.handle_preview_website(
+                settings,
+                site.base + "/image",
+                fetcher=fetcher,
+            )
+
+        self.assertEqual(status, 415)
+        self.assertIn("HTML", body["error"]["message"])
+
+    def test_preview_website_requires_url(self):
+        for url in (None, "", "   ", "not-a-url"):
+            with self.subTest(url=url):
+                status, body = handlers.handle_preview_website(
+                    Settings(),
+                    url,
+                )
+                self.assertEqual(status, 400)
+                self.assertIn("error", body)
