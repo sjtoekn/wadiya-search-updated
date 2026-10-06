@@ -34,6 +34,19 @@ class IndexerTests(SearchStackCase):
         self.assertEqual(res.total, 1)
         self.assertEqual(self.storage.documents_needing_index(10), [])
 
+    def test_typo_tolerance_edit_distance_one(self):
+        self.add(
+            url="https://e.org/python",
+            title="Python Guide",
+            content="python programming guide",
+        )
+        self.build()
+
+        r = self.svc.search("pyhton")
+
+        self.assertEqual(r["result_count"], 1)
+        self.assertEqual(r["results"][0]["url"], "https://e.org/python")
+
     def test_stemming_phrase_and_and_or(self):
         self.add(url="https://e.org/1", content="rivers run through the dry riverbed slowly")
         self.add(url="https://e.org/2", content="a dry spell and a riverbed fish")
@@ -44,6 +57,49 @@ class IndexerTests(SearchStackCase):
         self.assertEqual(s("dry riverbed"), {"https://e.org/1", "https://e.org/2"})   # both contain both terms
         self.assertEqual(len(s("fish riverbed dry")), 1)                         # AND
         self.assertEqual(len(s("fish pasta", all_=False)), 1)                    # OR
+
+    def test_query_operators_parse(self):
+        q = parse_query('python "fast api" -django site:example.com intitle:guide filetype:pdf')
+
+        self.assertEqual(q.terms, ("python",))
+        self.assertEqual(q.phrases, (("fast", "api"),))
+        self.assertEqual(q.excluded_terms, ("django",))
+        self.assertEqual(q.sites, ("example.com",))
+        self.assertEqual(q.title_terms, ("guide",))
+        self.assertEqual(q.filetypes, ("pdf",))
+
+    def test_site_operator_filters_domain(self):
+        self.add(url="https://example.com/python", domain="example.com", content="python")
+        self.add(url="https://other.com/python", domain="other.com", content="python")
+        self.build()
+
+        r = self.svc.search("python site:example.com")
+        self.assertEqual([x["url"] for x in r["results"]], ["https://example.com/python"])
+
+    def test_exclude_operator_filters_terms(self):
+        self.add(url="https://e.org/python", content="python guide")
+        self.add(url="https://e.org/django", content="python django guide")
+        self.build()
+
+        r = self.svc.search("python -django")
+        self.assertEqual([x["url"] for x in r["results"]], ["https://e.org/python"])
+
+    def test_intitle_operator_filters_title(self):
+        self.add(url="https://e.org/title", title="Python Guide", content="general")
+        self.add(url="https://e.org/body", title="General Guide", content="python")
+        self.build()
+
+        r = self.svc.search("intitle:python")
+        self.assertEqual([x["url"] for x in r["results"]], ["https://e.org/title"])
+
+    def test_filetype_operator_filters_url(self):
+        self.add(url="https://e.org/guide.pdf", content="python guide")
+        self.add(url="https://e.org/guide.html", content="python guide")
+        self.build()
+
+        r = self.svc.search("python filetype:pdf")
+        self.assertEqual([x["url"] for x in r["results"]], ["https://e.org/guide.pdf"])
+
 
     def test_reindex_replaces_not_duplicates(self):
         i = self.add(content="original text unique1")
@@ -120,6 +176,32 @@ class RankingTests(SearchStackCase):
         self.assertIn(url_hit, order)
         self.assertIn(body_hit, order)
         self.assertLess(order.index(url_hit), order.index(body_hit))
+
+    def test_close_terms_rank_above_far_terms(self):
+        close = self.add(
+            url="https://e.org/close",
+            title="Other",
+            content="alpha beta useful content",
+        )
+        far = self.add(
+            url="https://e.org/far",
+            title="Other",
+            content="alpha " + "filler " * 40 + "beta",
+        )
+        self.build()
+
+        q = parse_query("alpha beta")
+        ranked = self.ranker.rank(
+            q,
+            self.indexer.search(
+                q,
+                10,
+                weights=self.ranker.field_weights,
+            ).hits,
+        )
+
+        order = [h.doc_id for h in ranked]
+        self.assertEqual(order[0], close)
 
     def test_deterministic_ties(self):
         for i in range(3):

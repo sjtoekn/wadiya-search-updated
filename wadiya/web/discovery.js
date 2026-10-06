@@ -156,6 +156,12 @@
           );
         }
 
+        if (page.language) {
+          item.appendChild(
+            el('div', 'discovery-details', 'Language: ' + page.language)
+          );
+        }
+
         if (page.crawled_at) {
           item.appendChild(
             el(

@@ -9,7 +9,7 @@ const results = []; const check = (name, ok, detail) => { results.push({ name, o
 (async () => {
   const serverModule = process.env.UI_SERVER === 'real' ? 'tests.browser.real_server' : 'tests.browser.dev_server';   // real = the actual FastAPI app
   console.log('server under test:', serverModule);
-  const srv = spawn('python3', ['-m', serverModule], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const srv = spawn(process.env.PYTHON || 'python3', ['-m', serverModule], { stdio: ['ignore', 'pipe', 'inherit'] });
   const base = await new Promise((res, rej) => { srv.stdout.on('data', d => { const m = /PORT=(\d+)/.exec(d.toString()); if (m) res(`http://127.0.0.1:${m[1]}`); }); setTimeout(() => rej(new Error('server did not start')), 15000); });
   for (let i = 0; ; i++) {           // wait until the server actually answers (uvicorn needs a moment after printing PORT)
     try { if ((await fetch(base + '/api/health')).ok) break; } catch (e) {}
@@ -56,11 +56,49 @@ const results = []; const check = (name, ok, detail) => { results.push({ name, o
     await page.locator('.discover-link').first().click();
     await page.waitForURL(/\/discovery\?domain=example\.org/);
     await page.waitForSelector('.discovery-hero');
-    check('result → Discover website opens Website Discovery', /\/discovery\?domain=example\.org/.test(page.url()) && /WEBSITE DISCOVERY/.test(await page.locator('.discovery-kicker').innerText()));
+    check('result → Discover website opens Website Discovery', /\/discovery\?domain=example\.org/.test(page.url()) && /WEBSITE DISCOVERY/.test(await page.locator('.discovery-hero .discovery-kicker').innerText()));
     check('Website Discovery shows correct domain and page count', (await page.locator('.discovery-hero h1').innerText()) === 'example.org' && /2 discovered pages?/.test(await page.locator('.discovery-summary').innerText()));
     check('Website Discovery renders discovered pages from API data', (await page.locator('.discovery-list .discovery-page').count()) === 2 && /Wadi guide/.test(await page.locator('.discovery-list').innerText()) && /Oasis facts/.test(await page.locator('.discovery-list').innerText()));
     check('discovered pages show URL, language and crawl time', /https:\/\/example\.org\/wadi/.test(await page.locator('.discovery-list').innerText()) && /en/.test(await page.locator('.discovery-list').innerText()) && /crawled/.test(await page.locator('.discovery-list').innerText()));
     await page.screenshot({ path: `${SHOTS}/discovery-desktop.png`, fullPage: true });
+
+    // ---------- public website submission ----------
+    await page.goto(base + '/discovery?domain=example.org');
+    await page.waitForSelector('#websiteSubmitForm');
+
+    check(
+      'public submission form is visible',
+      await page.locator('#websiteSubmitForm').isVisible() &&
+      await page.locator('#websiteUrl').isVisible() &&
+      await page.locator('#websiteSubmitButton').isVisible()
+    );
+
+    await page.fill('#websiteUrl', 'https://submitted.example');
+    await page.click('#websiteSubmitButton');
+    await page.waitForFunction(() => /submitted successfully/i.test(document.getElementById('websiteSubmitMessage').textContent));
+
+    check(
+      'valid website submission succeeds',
+      /submitted successfully/i.test(await page.locator('#websiteSubmitMessage').innerText())
+    );
+
+    await page.fill('#websiteUrl', 'https://submitted.example');
+    await page.click('#websiteSubmitButton');
+    await page.waitForFunction(() => /already in the discovery queue/i.test(document.getElementById('websiteSubmitMessage').textContent));
+
+    check(
+      'duplicate website submission is idempotent',
+      /already in the discovery queue/i.test(await page.locator('#websiteSubmitMessage').innerText())
+    );
+
+    await page.fill('#websiteUrl', 'javascript:alert(1)');
+    await page.click('#websiteSubmitButton');
+    await page.waitForFunction(() => /invalid|unsafe/i.test(document.getElementById('websiteSubmitMessage').textContent));
+
+    check(
+      'invalid or unsafe website URL is rejected',
+      /invalid|unsafe/i.test(await page.locator('#websiteSubmitMessage').innerText())
+    );
 
     // ---------- pagination ----------
     await page.goto(base + '/?q=paginate'); await results$(page).first().waitFor();

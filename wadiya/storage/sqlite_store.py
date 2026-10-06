@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS urls (
   http_status INTEGER,
   last_error TEXT,
   added_at TEXT NOT NULL,
-  last_attempt_at TEXT
+  last_attempt_at TEXT,
+  next_crawl_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_urls_pick ON urls(status, depth, id);
 CREATE INDEX IF NOT EXISTS idx_urls_domain ON urls(domain, status);
@@ -113,7 +114,7 @@ _COUNTED = ("done", "duplicate", "noindex")   # statuses that consumed a page of
 QUERY_LOG_KEEP = 10_000
 
 # Database schema version. Increment this when a new migration is added.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _doc(row: sqlite3.Row) -> Document:
@@ -240,8 +241,31 @@ class SQLiteStorage(Storage):
                         "ADD COLUMN next_attempt_at TEXT"
                     )
 
+                url_cols = {
+                    row["name"]
+                    for row in c.execute("PRAGMA table_info(urls)").fetchall()
+                }
+                if "next_crawl_at" not in url_cols:
+                    c.execute(
+                        "ALTER TABLE urls ADD COLUMN next_crawl_at TEXT"
+                    )
+
                 c.execute("PRAGMA user_version = 4")
                 current_version = 4
+
+            # Migration 5: per-domain freshness policies.
+            if current_version < 5:
+                c.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS domain_freshness (
+                      domain TEXT PRIMARY KEY,
+                      interval_seconds REAL NOT NULL,
+                      updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                c.execute("PRAGMA user_version = 5")
+                current_version = 5
 
             if current_version != SCHEMA_VERSION:
                 raise RuntimeError(
@@ -438,6 +462,29 @@ class SQLiteStorage(Storage):
             ).fetchone()
             return dict(row) if row else None
 
+    def get_domain_freshness(self, domain: str) -> float | None:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT interval_seconds FROM domain_freshness WHERE domain=?",
+                (domain,),
+            ).fetchone()
+            return float(row["interval_seconds"]) if row else None
+
+    def set_domain_freshness(self, domain: str, interval_seconds: float) -> None:
+        now = now_iso()
+        interval_seconds = max(0.0, float(interval_seconds))
+        with self._conn(write=True) as c:
+            c.execute(
+                """
+                INSERT INTO domain_freshness(domain, interval_seconds, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(domain) DO UPDATE SET
+                  interval_seconds=excluded.interval_seconds,
+                  updated_at=excluded.updated_at
+                """,
+                (domain, interval_seconds, now),
+            )
+
     def list_discovered_sites(
         self,
         status: str | None = None,
@@ -619,35 +666,69 @@ class SQLiteStorage(Storage):
 
     # ------------------------------------------------------------------ queue
     def enqueue(self, url: str, domain: str, depth: int, force: bool = False) -> bool:
+        now = now_iso()
         with self._conn(write=True) as c:
             if force:
                 cur = c.execute(
-                    "INSERT INTO urls (url, domain, depth, added_at) VALUES (?,?,?,?) "
-                    "ON CONFLICT(url) DO UPDATE SET status='pending', depth=min(depth, excluded.depth) "
-                    "WHERE status <> 'in_progress'", (url, domain, depth, now_iso()))
+                    "INSERT INTO urls "
+                    "(url, domain, depth, added_at, next_crawl_at) "
+                    "VALUES (?,?,?,?,?) "
+                    "ON CONFLICT(url) DO UPDATE SET "
+                    "status='pending', "
+                    "depth=min(depth, excluded.depth), "
+                    "next_crawl_at=excluded.next_crawl_at "
+                    "WHERE status <> 'in_progress'",
+                    (url, domain, depth, now, now),
+                )
             else:
-                cur = c.execute("INSERT OR IGNORE INTO urls (url, domain, depth, added_at) VALUES (?,?,?,?)",
-                                (url, domain, depth, now_iso()))
+                cur = c.execute(
+                    "INSERT OR IGNORE INTO urls "
+                    "(url, domain, depth, added_at, next_crawl_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (url, domain, depth, now, now),
+                )
             return cur.rowcount > 0
 
     def claim_next(self, exclude_domains: Sequence[str] = ()) -> Optional[QueueItem]:
         ex = list(exclude_domains)
-        sql = "SELECT id, url, domain, depth, attempts FROM urls WHERE status='pending'"
+        sql = (
+            "SELECT id, url, domain, depth, attempts "
+            "FROM urls "
+            "WHERE status='pending' "
+            "AND (next_crawl_at IS NULL OR next_crawl_at<=?)"
+        )
         if ex:
             sql += f" AND domain NOT IN ({','.join('?' * len(ex))})"
         sql += " ORDER BY depth, id LIMIT 1"
         with self._conn(write=True) as c:
-            r = c.execute(sql, ex).fetchone()
+            r = c.execute(sql, [now_iso(), *ex]).fetchone()
             if not r:
                 return None
             c.execute("UPDATE urls SET status='in_progress', attempts=attempts+1, last_attempt_at=? WHERE id=?",
                       (now_iso(), r["id"]))
             return QueueItem(r["id"], r["url"], r["domain"], r["depth"], r["attempts"] + 1)
 
-    def mark_url(self, url, status, http_status=None, error=None) -> None:
+    def mark_url(
+        self,
+        url,
+        status,
+        http_status=None,
+        error=None,
+        next_crawl_at=None,
+    ) -> None:
         with self._conn(write=True) as c:
-            c.execute("UPDATE urls SET status=?, http_status=?, last_error=? WHERE url=?",
-                      (status, http_status, error[:300] if error else None, url))
+            c.execute(
+                "UPDATE urls "
+                "SET status=?, http_status=?, last_error=?, next_crawl_at=? "
+                "WHERE url=?",
+                (
+                    status,
+                    http_status,
+                    error[:300] if error else None,
+                    next_crawl_at,
+                    url,
+                ),
+            )
 
     def queue_size(self) -> int:
         with self._conn() as c:

@@ -387,7 +387,54 @@ class Crawler:
 
     # ------------------------------------------------------------------ one URL
     def _finish(self, run_id, url, outcome, queue_status, http=None, ms=None, error=None):
-        self.storage.mark_url(url, queue_status, http, error)
+        next_crawl_at = None
+
+        if queue_status in ("failed", "robots_blocked", "skipped"):
+            try:
+                with self.storage._conn() as c:
+                    row = c.execute(
+                        "SELECT attempts FROM urls WHERE url=?",
+                        (url,),
+                    ).fetchone()
+                attempts = int(row["attempts"] or 1) if row else 1
+            except Exception:
+                attempts = 1
+
+            delay = max(
+                0.0,
+                float(getattr(self.s, "retry_backoff", 1.0))
+                * (2 ** max(0, attempts - 1)),
+            )
+            next_crawl_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=delay)
+            ).isoformat()
+
+        if queue_status in ("done", "duplicate", "noindex"):
+            default_interval = float(
+                getattr(self.s, "freshness_interval", 86400.0)
+            )
+            interval = default_interval
+
+            try:
+                domain = site_key(urlsplit(url).hostname)
+                domain_interval = self.storage.get_domain_freshness(domain)
+                if domain_interval is not None:
+                    interval = float(domain_interval)
+            except (TypeError, ValueError):
+                interval = default_interval
+
+            interval = max(0.0, interval)
+            next_crawl_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=interval)
+            ).isoformat()
+
+        self.storage.mark_url(
+            url,
+            queue_status,
+            http,
+            error,
+            next_crawl_at,
+        )
         self.storage.log_crawl_event(run_id, url, outcome, http, ms, error)
 
         # Keep automatically discovered roots synchronized with

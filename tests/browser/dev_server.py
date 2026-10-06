@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 from tests.helpers import make_doc
 from wadiya.admin.auth import AdminAuth, hash_password
 from wadiya.api import handlers
-from wadiya.api.limits import MAX_LOGIN_BODY, BodyLimiter, BodyTooLarge
+from wadiya.api.limits import MAX_LOGIN_BODY, BodyLimiter, BodyTooLarge, SubmitLimiter
 from wadiya.api.security import COOKIE_NAME, SECURITY_HEADERS
 from wadiya.config.settings import Settings
 from wadiya.indexer.fts5 import FTS5Indexer
@@ -34,9 +34,11 @@ def build_world(tmp):
     storage.init(); indexer.init()
     add = lambda **kw: storage.save_document(make_doc(**kw))
     add(url="https://example.org/wadi", title="Wadi guide", domain="example.org",
-        content="A wadi is a dry riverbed that fills with water after heavy rain in arid regions.")
+        content="A wadi is a dry riverbed that fills with water after heavy rain in arid regions.",
+        language="en")
     add(url="https://example.org/oasis", title="Oasis facts", domain="example.org",
-        content="An oasis is a fertile spot in a desert. Some oases sit beside a wadi.")
+        content="An oasis is a fertile spot in a desert. Some oases sit beside a wadi.",
+        language="en")
     for i in range(25):
         add(url=f"https://paginate.example/{i}", title=f"Paginate item {i:02d}", domain="paginate.example",
             content=f"paginate sample document number {i} with some filler words", chash=f"p{i}")
@@ -51,6 +53,7 @@ def build_world(tmp):
 
 def make_server(tmp, port=0):
     st, storage, indexer, service, auth = build_world(tmp)
+    submit_limiter = SubmitLimiter()
 
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a): pass
@@ -94,29 +97,126 @@ def make_server(tmp, port=0):
 
         def do_POST(self):
             u = urlsplit(self.path)
+
+            if u.path == "/api/submit":
+                if not (self.headers.get("Content-Type") or "").lower().startswith("application/json"):
+                    return self._send(
+                        415,
+                        handlers.error(415, "expected application/json")[1],
+                    )
+
+                lim = BodyLimiter(4096)
+
+                try:
+                    lim.declare(self.headers.get("Content-Length"))
+                    length = int(self.headers.get("Content-Length") or 0)
+                    lim.feed(self.rfile.read(length))
+                except BodyTooLarge:
+                    return self._send(
+                        413,
+                        handlers.error(413, "request body too large")[1],
+                    )
+                except ValueError:
+                    return self._send(
+                        400,
+                        handlers.error(400, "invalid content-length")[1],
+                    )
+
+                try:
+                    data = json.loads(lim.body() or b"null")
+                except Exception:
+                    return self._send(
+                        400,
+                        handlers.error(400, "invalid json")[1],
+                    )
+
+                url = data.get("url") if isinstance(data, dict) else None
+                client_key = self.client_address[0]
+
+                if not submit_limiter.allowed(client_key):
+                    retry_after = submit_limiter.retry_after(client_key)
+                    return self._send(
+                        429,
+                        handlers.error(
+                            429,
+                            "too many website submissions; try again later",
+                        )[1],
+                        extra={"Retry-After": str(retry_after)},
+                    )
+
+                submit_limiter.hit(client_key)
+
+                status, body = handlers.handle_submit_website(storage, url)
+                return self._send(status, body)
+
             if u.path == "/api/admin/login":
                 if not (self.headers.get("Content-Type") or "").lower().startswith("application/json"):
-                    return self._send(415, handlers.error(415, "expected application/json")[1])
+                    return self._send(
+                        415,
+                        handlers.error(415, "expected application/json")[1],
+                    )
+
                 lim = BodyLimiter(MAX_LOGIN_BODY)
+
                 try:
                     lim.declare(self.headers.get("Content-Length"))
                     lim.feed(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
                 except BodyTooLarge:
-                    return self._send(413, handlers.error(413, "request body too large")[1])
+                    return self._send(
+                        413,
+                        handlers.error(413, "request body too large")[1],
+                    )
                 except ValueError:
-                    return self._send(400, handlers.error(400, "invalid content-length")[1])
+                    return self._send(
+                        400,
+                        handlers.error(400, "invalid content-length")[1],
+                    )
+
                 raw = lim.body()
+
                 try:
                     data = json.loads(raw or b"null")
                 except Exception:
-                    return self._send(400, handlers.error(400, "invalid json")[1])
+                    return self._send(
+                        400,
+                        handlers.error(400, "invalid json")[1],
+                    )
+
                 pw = data.get("password") if isinstance(data, dict) else None
-                code, body, token = handlers.handle_login(auth, pw, self.client_address[0])
-                extra = {"Set-Cookie": f"{COOKIE_NAME}={token}; HttpOnly; SameSite=Strict; Path=/"} if token else None
+                code, body, token = handlers.handle_login(
+                    auth,
+                    pw,
+                    self.client_address[0],
+                )
+
+                extra = (
+                    {
+                        "Set-Cookie": (
+                            f"{COOKIE_NAME}={token}; "
+                            "HttpOnly; SameSite=Strict; Path=/"
+                        )
+                    }
+                    if token
+                    else None
+                )
+
                 return self._send(code, body, extra=extra)
+
             if u.path == "/api/admin/logout":
-                return self._send(200, {"ok": True}, extra={"Set-Cookie": f"{COOKIE_NAME}=; Max-Age=0; Path=/"})
-            return self._send(404, handlers.error(404, "Not Found")[1])
+                return self._send(
+                    200,
+                    {"ok": True},
+                    extra={
+                        "Set-Cookie": (
+                            f"{COOKIE_NAME}=; Max-Age=0; Path=/"
+                        )
+                    },
+                )
+
+            return self._send(
+                404,
+                handlers.error(404, "Not Found")[1],
+            )
 
     return ThreadingHTTPServer(("127.0.0.1", port), H)
 

@@ -18,6 +18,80 @@ class CrawlerTests(TempDirCase):
             return {r["url"].split("/", 3)[3] if r["url"].count("/") > 2 else "": r["status"]
                     for r in c.execute("SELECT url, status FROM urls")}
 
+    def test_domain_freshness_override_sets_next_crawl(self):
+        self.storage.set_domain_freshness("127.0.0.1", 21600)
+        from dataclasses import replace
+
+        settings = replace(self.settings, retry_backoff=5.0)
+
+        with MockSite(site_routes()) as site:
+            stats, _ = self.run_crawl(site)
+
+        with self.storage._conn() as c:
+            row = c.execute(
+                "SELECT next_crawl_at FROM urls WHERE url=?",
+                (site.base + "/",),
+            ).fetchone()
+
+        self.assertIsNotNone(row["next_crawl_at"])
+
+        from datetime import datetime, timezone
+
+        scheduled = datetime.fromisoformat(row["next_crawl_at"])
+        now = datetime.now(timezone.utc)
+        seconds = (scheduled - now).total_seconds()
+
+        self.assertGreater(seconds, 21500)
+        self.assertLess(seconds, 21700)
+        self.assertGreater(stats.stored, 0)
+
+    def test_failed_crawl_gets_retry_schedule(self):
+        from dataclasses import replace
+        from datetime import datetime, timezone
+        from wadiya.crawler.crawler import Crawler
+        from wadiya.crawler.fetcher import Fetcher
+        from wadiya.crawler.robots import RobotsChecker
+
+        settings = replace(self.settings, retry_backoff=5.0)
+
+        url = "http://127.0.0.1/m4-failure"
+        self.storage.enqueue(url, "127.0.0.1", 0)
+        run_id = self.storage.start_run()
+
+        fetcher = Fetcher(settings)
+        robots = RobotsChecker(fetcher, settings)
+
+        crawler = Crawler(
+            settings,
+            self.storage,
+            fetcher,
+            robots,
+        )
+
+        crawler._finish(
+            run_id,
+            url,
+            "failed",
+            "failed",
+            error="test_failure",
+        )
+
+        with self.storage._conn() as c:
+            row = c.execute(
+                "SELECT status, next_crawl_at FROM urls WHERE url=?",
+                (url,),
+            ).fetchone()
+
+        self.assertEqual(row["status"], "failed")
+        self.assertIsNotNone(row["next_crawl_at"])
+
+        scheduled = datetime.fromisoformat(row["next_crawl_at"])
+        now = datetime.now(timezone.utc)
+        seconds = (scheduled - now).total_seconds()
+
+        self.assertGreater(seconds, 4.5)
+        self.assertLessEqual(seconds, 5.5)
+
     def test_full_crawl_behaviour(self):
         with MockSite(site_routes()) as site:
             stats, _ = self.run_crawl(site)

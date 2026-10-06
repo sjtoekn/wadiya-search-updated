@@ -23,5 +23,12 @@ class SnippetTests(unittest.TestCase):
         self.assertIn("beta", s)
 
 
+    def test_best_window_contains_all_terms(self):
+        text = ("alpha " * 80) + ("beta gamma " * 3) + ("alpha " * 80)
+        s = make_snippet(text, ["alpha", "beta", "gamma"], max_len=80)
+        self.assertIn("beta", s)
+        self.assertIn("gamma", s)
+
+
 if __name__ == "__main__":
     unittest.main()

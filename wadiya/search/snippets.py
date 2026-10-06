@@ -25,11 +25,48 @@ def make_snippet(text: str, terms, max_len: int = 220, fallback: str = "") -> st
     positions.sort()
 
     best_start, best_score = 0, -1
-    for pos, _ in positions[:200]:
-        start = max(0, pos - 40)
-        score = len({i for p, i in positions if start <= p < start + max_len})
-        if score > best_score:
-            best_start, best_score = start, score
+    wanted = set(range(len(pats)))
+
+    # Prefer the smallest window containing every query term.
+    wanted = set(range(len(pats)))
+    recent = positions[:200]
+
+    left = 0
+    counts = {}
+    covered = 0
+
+    for right, (pos, term_index) in enumerate(recent):
+        counts[term_index] = counts.get(term_index, 0) + 1
+        if counts[term_index] == 1:
+            covered += 1
+
+        while covered == len(wanted) and left <= right:
+            left_pos = recent[left][0]
+            span = pos - left_pos
+
+            if span < max_len:
+                best_start = max(0, left_pos - (max_len - span) // 2)
+                best_score = len(wanted)
+            elif best_score < len(wanted):
+                best_start = max(0, left_pos - 40)
+                best_score = len(wanted) - 1
+
+            left_term = recent[left][1]
+            counts[left_term] -= 1
+            if counts[left_term] == 0:
+                covered -= 1
+            left += 1
+
+    if best_score < len(wanted):
+        for pos, _ in recent:
+            start = max(0, pos - 40)
+            window = {
+                i for p, i in positions
+                if start <= p < start + max_len
+            }
+            if len(window) > best_score:
+                best_start, best_score = start, len(window)
+
     start, end = best_start, min(len(text), best_start + max_len)
     if start > 0:
         sp = text.find(" ", start)

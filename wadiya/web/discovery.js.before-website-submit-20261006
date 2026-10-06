@@ -1,0 +1,227 @@
+(function () {
+  'use strict';
+
+  var statusEl = document.getElementById('status');
+  var discoveryEl = document.getElementById('discovery');
+  var searchForm = document.getElementById('searchForm');
+  var searchInput = document.getElementById('q');
+  var websiteSubmitForm = document.getElementById('websiteSubmitForm');
+  var websiteUrlInput = document.getElementById('websiteUrl');
+  var websiteSubmitButton = document.getElementById('websiteSubmitButton');
+  var websiteSubmitMessage = document.getElementById('websiteSubmitMessage');
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function setStatus(text, error) {
+    statusEl.textContent = text || '';
+    statusEl.className = 'status' + (error ? ' error' : '');
+  }
+
+  function safeHttpUrl(url) {
+    return /^https?:\/\//i.test(url) ? url : null;
+  }
+
+  function formatDateTime(value) {
+    if (!value) return '';
+    var date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short'
+    }).format(date);
+  }
+
+  function render(data) {
+    discoveryEl.textContent = '';
+
+    var hero = el('section', 'discovery-hero');
+    hero.appendChild(el('p', 'discovery-kicker', 'WEBSITE DISCOVERY'));
+    hero.appendChild(el('h1', null, data.domain));
+    hero.appendChild(el('p', 'discovery-summary',
+      data.page_count.toLocaleString() + ' discovered page' +
+      (data.page_count === 1 ? '' : 's')
+    ));
+
+    var meta = el('div', 'discovery-meta');
+    meta.appendChild(el('span', null, 'First crawled: ' + formatDateTime(data.first_crawled)));
+    meta.appendChild(el('span', null, 'Last crawled: ' + formatDateTime(data.last_crawled)));
+    hero.appendChild(meta);
+
+    var pages = el('section', 'discovery-pages');
+    pages.appendChild(el('h2', null, 'Discovered pages'));
+
+    var list = el('div', 'discovery-list');
+
+    data.pages.forEach(function (page, index) {
+      var item = el('article', 'discovery-page');
+      item.appendChild(el('div', 'discovery-number', String(index + 1).padStart(2, '0')));
+
+      var href = safeHttpUrl(page.url);
+      var title = el(href ? 'a' : 'span', 'discovery-page-title', page.title || page.url);
+
+      if (href) {
+        title.href = href;
+        title.target = '_blank';
+        title.rel = 'noopener noreferrer nofollow';
+      }
+
+      item.appendChild(title);
+      item.appendChild(el('div', 'discovery-url', page.url));
+
+      if (page.description) {
+        item.appendChild(el('p', 'discovery-description', page.description));
+      }
+
+      var details = [];
+      if (page.language) details.push(page.language);
+      if (page.crawled_at) details.push('crawled ' + formatDateTime(page.crawled_at));
+
+      if (details.length) {
+        item.appendChild(el('div', 'discovery-details', details.join(' · ')));
+      }
+
+      list.appendChild(item);
+    });
+
+    pages.appendChild(list);
+    discoveryEl.appendChild(hero);
+    discoveryEl.appendChild(pages);
+  }
+
+  function setSubmitMessage(text, state) {
+    websiteSubmitMessage.textContent = text || '';
+    websiteSubmitMessage.className =
+      'website-submit-message' + (state ? ' ' + state : '');
+  }
+
+  function setSubmitBusy(busy) {
+    websiteSubmitButton.disabled = busy;
+    websiteSubmitButton.textContent = busy ? 'Submitting…' : 'Submit website';
+    websiteUrlInput.disabled = busy;
+  }
+
+  websiteSubmitForm.addEventListener('submit', function (event) {
+    event.preventDefault();
+
+    var url = (websiteUrlInput.value || '').trim();
+
+    if (!url) {
+      setSubmitMessage('Enter your website URL.', 'error');
+      websiteUrlInput.focus();
+      return;
+    }
+
+    if (url.length > 2048) {
+      setSubmitMessage('That URL is too long.', 'error');
+      websiteUrlInput.focus();
+      return;
+    }
+
+    if (!/^https?:\\/\\//i.test(url)) {
+      setSubmitMessage('Use a full URL starting with http:// or https://.', 'error');
+      websiteUrlInput.focus();
+      return;
+    }
+
+    setSubmitBusy(true);
+    setSubmitMessage('Submitting your website…', 'busy');
+
+    fetch('/api/submit', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ url: url })
+    })
+      .then(function (response) {
+        return response.json().catch(function () { return {}; }).then(function (body) {
+          return { ok: response.ok, status: response.status, body: body };
+        });
+      })
+      .then(function (result) {
+        var body = result.body || {};
+        var message =
+          body.message ||
+          (body.error && body.error.message) ||
+          'Could not submit this website.';
+
+        if (!result.ok) {
+          setSubmitMessage(message, 'error');
+          return;
+        }
+
+        if (body.submitted) {
+          setSubmitMessage(
+            'Website submitted successfully. Wadiya will discover and crawl it automatically.',
+            'success'
+          );
+        } else {
+          setSubmitMessage(
+            'This website is already in the discovery queue.',
+            'success'
+          );
+        }
+      })
+      .catch(function () {
+        setSubmitMessage('Could not reach the website submission service.', 'error');
+      })
+      .finally(function () {
+        setSubmitBusy(false);
+      });
+  });
+
+  searchForm.addEventListener('submit', function (event) {
+    event.preventDefault();
+
+    var query = (searchInput.value || '').trim();
+    if (!query) {
+      searchInput.focus();
+      return;
+    }
+
+    window.location.href = '/?q=' + encodeURIComponent(query);
+  });
+
+  var params = new URLSearchParams(location.search);
+  var domain = (params.get('domain') || '').trim();
+
+  if (!domain) {
+    setStatus('No website was specified.', true);
+    return;
+  }
+
+  document.title = domain + ' – Website Discovery – Wadiya.com';
+
+  fetch('/api/discovery?domain=' + encodeURIComponent(domain), {
+    headers: { Accept: 'application/json' }
+  })
+    .then(function (response) {
+      return response.json().catch(function () { return {}; }).then(function (body) {
+        return { ok: response.ok, body: body };
+      });
+    })
+    .then(function (result) {
+      if (!result.ok) {
+        setStatus(
+          result.body.error && result.body.error.message
+            ? result.body.error.message
+            : 'Could not discover this website.',
+          true
+        );
+        return;
+      }
+
+      setStatus('');
+      render(result.body);
+    })
+    .catch(function () {
+      setStatus('Could not reach the discovery service.', true);
+    });
+})();

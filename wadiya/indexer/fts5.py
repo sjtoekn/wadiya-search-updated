@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from dataclasses import replace
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Optional
@@ -54,6 +55,11 @@ class FTS5Indexer(Indexer):
                 "title, headings, description, body, url, domain, "
                 f"tokenize='{TOKENIZER}')")
 
+            c.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts_vocab "
+                "USING fts5vocab(docs_fts, 'row')"
+            )
+
     # rowid == document id, so replace/remove are O(log n)
     def index(self, docs: Iterable[IndexDocument]) -> int:
         n = 0
@@ -84,26 +90,186 @@ class FTS5Indexer(Indexer):
             c.execute("DELETE FROM docs_fts")
 
     @staticmethod
+    def _typo_distance_one(a: str, b: str) -> bool:
+        if a == b or abs(len(a) - len(b)) > 1:
+            return False
+
+        if not a.isalpha() or not b.isalpha():
+            return False
+
+        if len(a) == len(b):
+            mismatches = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
+
+            if len(mismatches) == 1:
+                return True
+
+            if (
+                len(mismatches) == 2
+                and mismatches[1] == mismatches[0] + 1
+                and a[mismatches[0]] == b[mismatches[1]]
+                and a[mismatches[1]] == b[mismatches[0]]
+            ):
+                return True
+
+            return False
+
+        if len(a) > len(b):
+            a, b = b, a
+
+        i = j = 0
+        used = False
+
+        while i < len(a) and j < len(b):
+            if a[i] == b[j]:
+                i += 1
+                j += 1
+                continue
+
+            if used:
+                return False
+
+            used = True
+            j += 1
+
+        return True
+
+    def _correct_query(self, query):
+        if not query.terms:
+            return query
+
+        corrections = {}
+
+        with self._conn() as c:
+            vocab_rows = c.execute(
+                "SELECT term FROM docs_fts_vocab"
+            ).fetchall()
+
+            vocab = {row["term"] for row in vocab_rows}
+
+            for term in query.terms:
+                if len(term) < 4:
+                    continue
+
+                # Porter vocabulary contains stems, so first check whether
+                # the exact query token can already be matched by FTS5.
+                exact_match = self.build_match(
+                    replace(query, terms=(term,), phrases=(), title_terms=()),
+                    True,
+                )
+
+                exists = c.execute(
+                    "SELECT 1 FROM docs_fts WHERE docs_fts MATCH ? LIMIT 1",
+                    (exact_match,),
+                ).fetchone()
+
+                if exists:
+                    continue
+
+                candidates = [
+                    candidate
+                    for candidate in vocab
+                    if len(candidate) >= 4
+                    and abs(len(candidate) - len(term)) <= 1
+                    and self._typo_distance_one(term, candidate)
+                ]
+
+                if candidates:
+                    corrections[term] = min(candidates)
+
+        if not corrections:
+            return query
+
+        corrected_terms = tuple(
+            corrections.get(term, term)
+            for term in query.terms
+        )
+
+        if corrected_terms == query.terms:
+            return query
+
+        return replace(query, terms=corrected_terms)
+
+    @staticmethod
     def build_match(query, match_all: bool) -> str:
-        # Tokens from the query parser are word characters only; each is still quoted so
-        # user input can never become FTS5 operator syntax.
-        parts = [f'"{t}"' for t in query.terms] + [f'"{" ".join(p)}"' for p in query.phrases]
-        return (" AND " if match_all else " OR ").join(parts)
+        # Parser output is tokenized, and every token is quoted before entering FTS5.
+        parts = []
+
+        for t in query.terms:
+            parts.append(f'"{t}"')
+
+        for p in query.phrases:
+            parts.append(f'"{" ".join(p)}"')
+
+        for t in query.title_terms:
+            parts.append(f'title:"{t}"')
+
+        if match_all:
+            joiner = " AND "
+        else:
+            joiner = " OR "
+
+        match = joiner.join(parts)
+
+        if query.excluded_terms:
+            exclusions = " ".join(f'NOT "{t}"' for t in query.excluded_terms)
+            match = f"{match} {exclusions}".strip()
+
+        return match
 
     def search(self, query, limit: int, offset: int = 0, match_all: bool = True,
-               weights: Optional[dict] = None, count_cap: int = 10_000) -> SearchHits:
+               weights: Optional[dict] = None, count_cap: int = 10_000,
+               _allow_typo: bool = True) -> SearchHits:
         w = {**DEFAULT_WEIGHTS, **(weights or {})}
         match = self.build_match(query, match_all)
+
         if not match:
             return SearchHits(0, False, [])
+
+        filters = []
+        params = []
+
+        if query.sites:
+            placeholders = ",".join("?" for _ in query.sites)
+            filters.append(f"lower(domain) IN ({placeholders})")
+            params.extend(query.sites)
+
+        if query.filetypes:
+            filetype_parts = []
+            for ext in query.filetypes:
+                ext = ext.lstrip(".")
+                filetype_parts.extend([
+                    "lower(url) LIKE ?",
+                    "lower(url) LIKE ?",
+                    "lower(url) LIKE ?",
+                ])
+                params.extend([
+                    f"%.{ext}",
+                    f"%.{ext}?%",
+                    f"%.{ext}#%",
+                ])
+            filters.append("(" + " OR ".join(filetype_parts) + ")")
+
+        where = "docs_fts MATCH ?"
+        where_params = [match]
+
+        if filters:
+            where += " AND " + " AND ".join(filters)
+            where_params.extend(params)
+
         try:
             with self._conn() as c:
-                total = c.execute("SELECT count(*) FROM (SELECT 1 FROM docs_fts WHERE docs_fts MATCH ? LIMIT ?)",
-                                  (match, count_cap)).fetchone()[0]
+                total = c.execute(
+                    f"SELECT count(*) FROM ("
+                    f"SELECT 1 FROM docs_fts WHERE {where} LIMIT ?"
+                    f")",
+                    (*where_params, count_cap),
+                ).fetchone()[0]
+
                 rows = c.execute(
-                    "SELECT rowid AS doc_id, title, url, domain, "
-                    "bm25(docs_fts, ?, ?, ?, ?, ?, ?) AS bm "
-                    "FROM docs_fts WHERE docs_fts MATCH ? ORDER BY bm LIMIT ? OFFSET ?",
+                    f"SELECT rowid AS doc_id, title, url, domain, "
+                    f"bm25(docs_fts, ?, ?, ?, ?, ?, ?) AS bm "
+                    f"FROM docs_fts WHERE {where} "
+                    f"ORDER BY bm LIMIT ? OFFSET ?",
                     (
                         w["title"],
                         w["headings"],
@@ -111,15 +277,34 @@ class FTS5Indexer(Indexer):
                         w["body"],
                         w["url"],
                         w["domain"],
-                        match,
+                        *where_params,
                         limit,
                         offset,
                     ),
                 ).fetchall()
         except sqlite3.OperationalError:
             return SearchHits(0, False, [])
-        return SearchHits(total, total >= count_cap,
-                          [Hit(r["doc_id"], -float(r["bm"]), r["title"], r["url"], r["domain"]) for r in rows])
+
+        result = SearchHits(
+            total,
+            total >= count_cap,
+            [Hit(r["doc_id"], -float(r["bm"]), r["title"], r["url"], r["domain"]) for r in rows],
+        )
+
+        if result.total == 0 and _allow_typo:
+            corrected = self._correct_query(query)
+            if corrected != query:
+                return self.search(
+                    corrected,
+                    limit,
+                    offset,
+                    match_all,
+                    weights,
+                    count_cap,
+                    False,
+                )
+
+        return result
 
     def count(self) -> int:
         with self._conn() as c:

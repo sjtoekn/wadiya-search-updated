@@ -46,12 +46,23 @@ class MigrationTests(TempDirCase):
                 )
             }
 
-        self.assertEqual(version, 4)
+        self.assertEqual(version, 5)
         self.assertIn("next_attempt_at", discovered_cols)
         self.assertIn("fail_count", doc_cols)
         self.assertIn("nosnippet", doc_cols)
         self.assertIn("url", discovered_cols)
         self.assertIn("status", discovered_cols)
+
+        with sqlite3.connect(db) as check:
+            domain_cols = {
+                row[1]
+                for row in check.execute(
+                    "PRAGMA table_info(domain_freshness)"
+                )
+            }
+        self.assertIn("domain", domain_cols)
+        self.assertIn("interval_seconds", domain_cols)
+        self.assertIn("updated_at", domain_cols)
 
 
 class V1MigrationTests(TempDirCase):
@@ -85,7 +96,7 @@ class V1MigrationTests(TempDirCase):
                 )
             }
 
-        self.assertEqual(version, 4)
+        self.assertEqual(version, 5)
         self.assertIn("next_attempt_at", discovered_cols)
         self.assertIn("fail_count", doc_cols)
         self.assertIn("nosnippet", doc_cols)
@@ -189,6 +200,23 @@ class DiscoveryAdminStorageTests(TempDirCase):
 
 
 class StorageTests(TempDirCase):
+    def test_domain_freshness_override(self):
+        self.assertIsNone(
+            self.storage.get_domain_freshness("example.org")
+        )
+
+        self.storage.set_domain_freshness("example.org", 21600)
+        self.assertEqual(
+            self.storage.get_domain_freshness("example.org"),
+            21600.0,
+        )
+
+        self.storage.set_domain_freshness("example.org", 259200)
+        self.assertEqual(
+            self.storage.get_domain_freshness("example.org"),
+            259200.0,
+        )
+
     def test_insert_and_get(self):
         r = self.storage.save_document(make_doc())
         self.assertEqual(r.outcome, "inserted")
@@ -265,6 +293,34 @@ class StorageTests(TempDirCase):
 
         second = s.claim_next()
         self.assertEqual(second.url, "https://example.org/mid")
+
+    def test_queue_skips_not_due_freshness_items(self):
+        s = self.storage
+        s.enqueue("https://example.org/future", "example.org", 0)
+
+        s.mark_url(
+            "https://example.org/future",
+            "done",
+            200,
+            next_crawl_at="2099-01-01T00:00:00+00:00",
+        )
+
+        self.assertIsNone(s.claim_next())
+
+    def test_queue_claims_due_freshness_items(self):
+        s = self.storage
+        s.enqueue("https://example.org/due", "example.org", 0)
+
+        s.mark_url(
+            "https://example.org/due",
+            "pending",
+            200,
+            next_crawl_at="2000-01-01T00:00:00+00:00",
+        )
+
+        item = s.claim_next()
+        self.assertIsNotNone(item)
+        self.assertEqual(item.url, "https://example.org/due")
 
     def test_force_enqueue_preserves_shallower_depth(self):
         s = self.storage

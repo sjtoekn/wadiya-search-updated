@@ -78,6 +78,7 @@ class Settings:
     max_response_bytes: int = 2 * 1024 * 1024
     max_robots_bytes: int = 512 * 1024
     default_crawl_delay: float = 1.0
+    freshness_interval: float = 86400.0
     max_crawl_delay: float = 10.0
     max_redirects: int = 5
     max_content_chars: int = 200_000
