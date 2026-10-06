@@ -33,6 +33,39 @@ class ApiHttpTests(SearchStackCase):
             self.assertEqual(r.status_code, 400, url)
             self.assertIn("message", r.json()["error"])
 
+    def test_search_query_operators(self):
+        self.add(
+            url="https://example.com/python.pdf",
+            domain="example.com",
+            title="Python Guide",
+            content="python guide",
+        )
+        self.add(
+            url="https://other.com/python.html",
+            domain="other.com",
+            title="General Guide",
+            content="python django guide",
+        )
+        self.build()
+
+        c = self.client
+
+        r = c.get("/api/search", params={"q": "python site:example.com"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["result_count"], 1)
+
+        r = c.get("/api/search", params={"q": "intitle:python"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["result_count"], 1)
+
+        r = c.get("/api/search", params={"q": "python filetype:pdf"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["result_count"], 1)
+
+        r = c.get("/api/search", params={"q": "python -django"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["result_count"], 1)
+
     def test_health_404_and_no_docs(self):
         self.assertEqual(self.client.get("/api/health").json(), {"status": "ok"})
         r = self.client.get("/nope"); self.assertEqual((r.status_code, r.json()["error"]["code"]), (404, 404))
@@ -153,6 +186,100 @@ class ApiHttpTests(SearchStackCase):
         c = TestClient(create_app(self.settings, self.storage, self.indexer))
         self.assertEqual(c.post("/api/admin/login", json={"password": PW}).status_code, 503)
         self.assertEqual(c.get("/api/admin/stats").status_code, 401)
+
+
+    def test_submit_website_accepts_valid_url(self):
+        r = self.client.post(
+            "/api/submit",
+            json={"url": "https://example.com"},
+        )
+
+        self.assertEqual(r.status_code, 202)
+
+        body = r.json()
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["submitted"])
+        self.assertEqual(body["status"], "pending")
+        self.assertEqual(body["url"], "https://example.com/")
+        self.assertEqual(body["domain"], "https://example.com/")
+
+
+    def test_submit_website_rate_limit(self):
+        for _ in range(10):
+            r = self.client.post(
+                "/api/submit",
+                json={"url": "https://example.com"},
+            )
+            self.assertIn(r.status_code, (200, 202))
+
+        r = self.client.post(
+            "/api/submit",
+            json={"url": "https://example.com/another"},
+        )
+
+        self.assertEqual(r.status_code, 429)
+        self.assertEqual(r.headers.get("retry-after"), "600")
+
+        body = r.json()
+        self.assertEqual(
+            body,
+            {
+                "error": {
+                    "code": 429,
+                    "message": "too many website submissions; try again later",
+                }
+            },
+        )
+
+    def test_submit_website_duplicate_is_idempotent(self):
+        first = self.client.post(
+            "/api/submit",
+            json={"url": "https://example.com"},
+        )
+        second = self.client.post(
+            "/api/submit",
+            json={"url": "https://example.com"},
+        )
+
+        self.assertEqual(first.status_code, 202)
+        self.assertEqual(second.status_code, 200)
+
+        body = second.json()
+        self.assertTrue(body["ok"])
+        self.assertFalse(body["submitted"])
+        self.assertEqual(body["status"], "pending")
+
+    def test_submit_website_rejects_missing_url(self):
+        r = self.client.post("/api/submit", json={})
+
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("url", r.json()["error"]["message"])
+
+    def test_submit_website_rejects_invalid_url(self):
+        r = self.client.post(
+            "/api/submit",
+            json={"url": "not-a-valid-url"},
+        )
+
+        self.assertEqual(r.status_code, 400)
+
+    def test_submit_website_requires_json(self):
+        r = self.client.post(
+            "/api/submit",
+            content='{"url":"https://example.com"}',
+            headers={"content-type": "text/plain"},
+        )
+
+        self.assertEqual(r.status_code, 415)
+
+    def test_submit_website_rejects_invalid_json(self):
+        r = self.client.post(
+            "/api/submit",
+            content='{"url":',
+            headers={"content-type": "application/json"},
+        )
+
+        self.assertEqual(r.status_code, 400)
 
 
 @unittest.skipUnless(HAVE, "fastapi/httpx not installed in this environment")

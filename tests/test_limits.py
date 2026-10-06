@@ -1,6 +1,6 @@
 import unittest
 
-from wadiya.api.limits import MAX_LOGIN_BODY, BodyLimiter, BodyTooLarge, parse_declared_length
+from wadiya.api.limits import MAX_LOGIN_BODY, BodyLimiter, BodyTooLarge, SubmitLimiter, parse_declared_length
 
 
 class BodyLimitTests(unittest.TestCase):
@@ -43,6 +43,22 @@ class BodyLimitTests(unittest.TestCase):
         import json
         self.assertGreater(MAX_LOGIN_BODY, len(json.dumps({"password": "p" * MAX_PASSWORD_LEN}).encode()))
         self.assertLessEqual(MAX_LOGIN_BODY, 16 * 1024)
+
+
+    def test_submit_limiter_window_and_client_isolation(self):
+        now = [0]
+        lim = SubmitLimiter(limit=2, window=10, clock=lambda: now[0])
+
+        self.assertTrue(lim.allowed("1.2.3.4"))
+        lim.hit("1.2.3.4")
+        lim.hit("1.2.3.4")
+        self.assertFalse(lim.allowed("1.2.3.4"))
+        self.assertTrue(lim.allowed("5.6.7.8"))
+        self.assertGreaterEqual(lim.retry_after("1.2.3.4"), 10)
+
+        now[0] = 11
+        self.assertTrue(lim.allowed("1.2.3.4"))
+        self.assertEqual(lim.retry_after("1.2.3.4"), 0)
 
 
 if __name__ == "__main__":

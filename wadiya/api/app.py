@@ -17,7 +17,7 @@ from ..ranking.bm25 import BM25Ranker
 from ..search.service import SearchService
 from ..storage.sqlite_store import SQLiteStorage
 from . import handlers
-from .limits import MAX_LOGIN_BODY, BodyLimiter, BodyTooLarge
+from .limits import MAX_LOGIN_BODY, BodyLimiter, BodyTooLarge, SubmitLimiter
 from .security import COOKIE_NAME as COOKIE, SECURITY_HEADERS, session_cookie_kwargs
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -31,6 +31,7 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None) -> FastAP
     indexer.init()
     service = SearchService(settings, storage, indexer, ranker or BM25Ranker())
     auth = AdminAuth(settings)
+    submit_limiter = SubmitLimiter()
 
     app = FastAPI(title="Wadiya", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings, app.state.storage, app.state.indexer, app.state.auth = settings, storage, indexer, auth
@@ -68,6 +69,48 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None) -> FastAP
     @app.get("/api/discovery")
     def discovery(domain: str = ""):
         status, body = handlers.handle_discovery(storage, domain)
+        return JSONResponse(body, status_code=status)
+
+    @app.post("/api/submit")
+    async def submit_website(request: Request):
+        if not request.headers.get("content-type", "").lower().startswith("application/json"):
+            raise HTTPException(status_code=415, detail="expected application/json")
+
+        limiter = BodyLimiter(4096)
+
+        try:
+            limiter.declare(request.headers.get("content-length"))
+            async for chunk in request.stream():
+                limiter.feed(chunk)
+        except BodyTooLarge:
+            raise HTTPException(status_code=413, detail="request body too large")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid content-length")
+
+        try:
+            data = json.loads(limiter.body() or b"null")
+        except Exception:
+            raise HTTPException(status_code=400, detail="invalid json")
+
+        url = data.get("url") if isinstance(data, dict) else None
+
+        client_key = request.client.host if request.client else "unknown"
+
+        if not submit_limiter.allowed(client_key):
+            retry_after = submit_limiter.retry_after(client_key)
+            response = JSONResponse(
+                handlers.error(
+                    429,
+                    "too many website submissions; try again later",
+                )[1],
+                status_code=429,
+            )
+            response.headers["Retry-After"] = str(retry_after)
+            return response
+
+        submit_limiter.hit(client_key)
+
+        status, body = handlers.handle_submit_website(storage, url)
         return JSONResponse(body, status_code=status)
 
     @app.get("/api/page")
