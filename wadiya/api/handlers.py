@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from ..admin.dashboard import build_stats
 from ..search.service import InvalidSearchRequest
+from ..crawler.urls import normalize_url, site_key, looks_crawlable
 
 
 def error(status: int, message: str) -> tuple:
@@ -109,6 +110,69 @@ def handle_admin_discovery(
             "start": start,
             "end": end,
         },
+    }
+
+
+def handle_submit_website(storage, url: str) -> tuple:
+    """Register a public website for automatic crawling and indexing."""
+    if not isinstance(url, str):
+        return error(400, "url is required")
+
+    raw = url.strip()
+
+    if not raw:
+        return error(400, "url is required")
+
+    if len(raw) > 2048:
+        return error(400, "url is too long")
+
+    normalized = normalize_url(raw)
+
+    if not normalized or not looks_crawlable(normalized):
+        return error(400, "invalid or unsupported website URL")
+
+    domain = site_key(normalized)
+
+    if not domain:
+        return error(400, "invalid website URL")
+
+    existing = storage.get_discovered_site(normalized)
+
+    if existing:
+        return 200, {
+            "ok": True,
+            "submitted": False,
+            "status": existing.get("status", "pending"),
+            "url": existing.get("url", normalized),
+            "domain": existing.get("domain", domain),
+            "message": "This website is already in the discovery queue.",
+        }
+
+    created = storage.register_discovered_site(
+        normalized,
+        domain,
+        "website_submission",
+        "pending",
+    )
+
+    if not created:
+        existing = storage.get_discovered_site(normalized)
+        return 200, {
+            "ok": True,
+            "submitted": False,
+            "status": existing.get("status", "pending") if existing else "pending",
+            "url": normalized,
+            "domain": domain,
+            "message": "This website is already in the discovery queue.",
+        }
+
+    return 202, {
+        "ok": True,
+        "submitted": True,
+        "status": "pending",
+        "url": normalized,
+        "domain": domain,
+        "message": "Website submitted successfully. It will be crawled automatically.",
     }
 
 

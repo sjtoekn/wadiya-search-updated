@@ -19,6 +19,42 @@
 
   <main class="discovery-main">
     <div id="status" class="status" role="status" aria-live="polite">Discovering website…</div>
+
+    <section class="website-submit" aria-labelledby="website-submit-title">
+      <div class="website-submit-copy">
+        <p class="discovery-kicker">SUBMIT A WEBSITE</p>
+        <h1 id="website-submit-title">Help Wadiya discover your website.</h1>
+        <p>
+          Website owners can submit a public website for automatic discovery and
+          crawling. There is no manual approval queue.
+        </p>
+      </div>
+
+      <form id="websiteSubmitForm" class="website-submit-form" novalidate>
+        <label for="websiteUrl">Website URL</label>
+        <div class="website-submit-row">
+          <input
+            id="websiteUrl"
+            name="url"
+            type="url"
+            inputmode="url"
+            maxlength="2048"
+            autocomplete="url"
+            placeholder="https://example.com"
+            aria-describedby="websiteSubmitMessage"
+            required
+          >
+          <button type="submit" id="websiteSubmitButton">Submit website</button>
+        </div>
+        <div
+          id="websiteSubmitMessage"
+          class="website-submit-message"
+          role="status"
+          aria-live="polite"
+        ></div>
+      </form>
+    </section>
+
     <section id="discovery" aria-live="polite"></section>
   </main>
 
