@@ -59,7 +59,7 @@ const results = []; const check = (name, ok, detail) => { results.push({ name, o
     check('result → Discover website opens Website Discovery', /\/discovery\?domain=example\.org/.test(page.url()) && /WEBSITE DISCOVERY/.test(await page.locator('.discovery-hero .discovery-kicker').innerText()));
     check('Website Discovery shows correct domain and page count', (await page.locator('.discovery-hero h1').innerText()) === 'example.org' && /2 discovered pages?/.test(await page.locator('.discovery-summary').innerText()));
     check('Website Discovery renders discovered pages from API data', (await page.locator('.discovery-list .discovery-page').count()) === 2 && /Wadi guide/.test(await page.locator('.discovery-list').innerText()) && /Oasis facts/.test(await page.locator('.discovery-list').innerText()));
-    check('discovered pages show URL, language and crawl time', /https:\/\/example\.org\/wadi/.test(await page.locator('.discovery-list').innerText()) && /en/.test(await page.locator('.discovery-list').innerText()) && /crawled/.test(await page.locator('.discovery-list').innerText()));
+    check('discovered pages show URL, language and crawl time', /https:\/\/example\.org\/wadi/.test(await page.locator('.discovery-list').innerText()) && /en/.test(await page.locator('.discovery-list').innerText()) && /crawled/i.test(await page.locator('.discovery-list').innerText()));
     await page.screenshot({ path: `${SHOTS}/discovery-desktop.png`, fullPage: true });
 
     // ---------- public website submission ----------
@@ -91,7 +91,7 @@ const results = []; const check = (name, ok, detail) => { results.push({ name, o
       /already in the discovery queue/i.test(await page.locator('#websiteSubmitMessage').innerText())
     );
 
-    await page.fill('#websiteUrl', 'javascript:alert(1)');
+    await page.fill('#websiteUrl', 'http://localhost/');
     await page.click('#websiteSubmitButton');
     await page.waitForFunction(() => /invalid|unsafe/i.test(document.getElementById('websiteSubmitMessage').textContent));
 

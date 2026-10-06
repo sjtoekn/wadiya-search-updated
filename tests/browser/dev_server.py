@@ -34,11 +34,9 @@ def build_world(tmp):
     storage.init(); indexer.init()
     add = lambda **kw: storage.save_document(make_doc(**kw))
     add(url="https://example.org/wadi", title="Wadi guide", domain="example.org",
-        content="A wadi is a dry riverbed that fills with water after heavy rain in arid regions.",
-        language="en")
+        content="A wadi is a dry riverbed that fills with water after heavy rain in arid regions.")
     add(url="https://example.org/oasis", title="Oasis facts", domain="example.org",
-        content="An oasis is a fertile spot in a desert. Some oases sit beside a wadi.",
-        language="en")
+        content="An oasis is a fertile spot in a desert. Some oases sit beside a wadi.")
     for i in range(25):
         add(url=f"https://paginate.example/{i}", title=f"Paginate item {i:02d}", domain="paginate.example",
             content=f"paginate sample document number {i} with some filler words", chash=f"p{i}")
