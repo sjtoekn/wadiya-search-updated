@@ -1,9 +1,13 @@
 """HTTP-level tests of the FastAPI wiring. Skipped automatically when fastapi/httpx are missing."""
 import unittest
+from unittest.mock import patch
 from dataclasses import replace
 
 from tests.test_search_stack import SearchStackCase
 from wadiya.admin.auth import hash_password
+from wadiya.crawler.fetcher import Fetcher
+from wadiya.crawler.urls import UrlPolicy
+from tests.mock_site import MockSite
 
 try:
     from fastapi.testclient import TestClient
@@ -22,7 +26,22 @@ class ApiHttpTests(SearchStackCase):
         self.add(url="https://e.org/1", title="Wadi guide", content="A wadi is a dry riverbed.")
         self.build()
         self.st = replace(self.settings, admin_password_hash=hash_password(PW), secret_key="k" * 48, cookie_secure=False)
-        self.client = TestClient(create_app(self.st, self.storage, self.indexer), raise_server_exceptions=False)
+        self.preview_fetcher = Fetcher(
+            self.st,
+            policy=UrlPolicy(
+                allowed_ports=None,
+                allow_private_networks=True,
+            ),
+        )
+        self.client = TestClient(
+            create_app(
+                self.st,
+                self.storage,
+                self.indexer,
+                fetcher=self.preview_fetcher,
+            ),
+            raise_server_exceptions=False,
+        )
 
     def test_search_and_validation(self):
         c = self.client
@@ -187,6 +206,127 @@ class ApiHttpTests(SearchStackCase):
         self.assertEqual(c.post("/api/admin/login", json={"password": PW}).status_code, 503)
         self.assertEqual(c.get("/api/admin/stats").status_code, 401)
 
+
+    def test_submit_preview_over_http_extracts_metadata(self):
+        html = """<!doctype html>
+<html lang="en">
+<head>
+  <title>Canadian Travel Guide</title>
+  <meta name="description" content="Practical travel information for Canadian destinations.">
+  <link rel="canonical" href="{base}/canonical">
+</head>
+<body>
+  <h1>Canadian Travel Guide</h1>
+  <h2>Canada Destinations</h2>
+  <p>Travel information for Canadian destinations and practical trip planning.</p>
+</body>
+</html>"""
+
+        with MockSite({
+            "/": (200, "text/html; charset=utf-8", html, {}),
+        }) as site, patch(
+            "wadiya.api.handlers.is_safe_submission_target",
+            return_value=True,
+        ):
+            before = self.storage.discovery_registry_stats()
+            r = self.client.post(
+                "/api/submit/preview",
+                json={"url": site.base + "/"},
+            )
+            after = self.storage.discovery_registry_stats()
+
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["url"], site.base + "/")
+        self.assertEqual(body["title"], "Canadian Travel Guide")
+        self.assertIn("description", body)
+        self.assertIn("language", body)
+        self.assertIn("headings", body)
+        self.assertIn("keywords", body)
+        self.assertEqual(before, after)
+
+    def test_submit_preview_over_http_validates_request(self):
+        r = self.client.post(
+            "/api/submit/preview",
+            json={},
+        )
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("message", r.json()["error"])
+
+        r = self.client.post(
+            "/api/submit/preview",
+            content="{}",
+            headers={"content-type": "text/plain"},
+        )
+        self.assertEqual(r.status_code, 415)
+
+        r = self.client.post(
+            "/api/submit/preview",
+            content="{bad json",
+            headers={"content-type": "application/json"},
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_submit_preview_over_http_rejects_unsafe_url(self):
+        r = self.client.post(
+            "/api/submit/preview",
+            json={"url": "http://127.0.0.1/"},
+        )
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("unsafe", r.json()["error"]["message"].lower())
+
+    def test_submit_preview_rate_limit(self):
+        html = """<!doctype html>
+<html>
+<head><title>Preview Limit Test</title></head>
+<body><h1>Preview Limit Test</h1></body>
+</html>"""
+
+        with MockSite({
+            "/": (200, "text/html; charset=utf-8", html, {}),
+        }) as site, patch(
+            "wadiya.api.handlers.is_safe_submission_target",
+            return_value=True,
+        ):
+            for _ in range(5):
+                r = self.client.post(
+                    "/api/submit/preview",
+                    json={"url": site.base + "/"},
+                )
+                self.assertEqual(r.status_code, 200)
+
+            r = self.client.post(
+                "/api/submit/preview",
+                json={"url": site.base + "/"},
+            )
+
+        self.assertEqual(r.status_code, 429)
+        self.assertEqual(r.headers.get("retry-after"), "600")
+        self.assertEqual(
+            r.json(),
+            {
+                "error": {
+                    "code": 429,
+                    "message": "too many website previews; try again later",
+                }
+            },
+        )
+
+    def test_submit_preview_over_http_rejects_non_html(self):
+        with MockSite({
+            "/image": (200, "image/png", b"not html", {}),
+        }) as site, patch(
+            "wadiya.api.handlers.is_safe_submission_target",
+            return_value=True,
+        ):
+            r = self.client.post(
+                "/api/submit/preview",
+                json={"url": site.base + "/image"},
+            )
+
+        self.assertEqual(r.status_code, 415)
+        self.assertIn("HTML", r.json()["error"]["message"])
 
     def test_submit_website_accepts_valid_url(self):
         r = self.client.post(
