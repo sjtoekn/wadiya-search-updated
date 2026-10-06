@@ -167,6 +167,10 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
         status, body = handlers.handle_page(storage, url)
         return JSONResponse(body, status_code=status)
 
+    @app.get("/submit-website", include_in_schema=False)
+    def submit_website_page():
+        return FileResponse(WEB_DIR / "submit-website.html")
+
     @app.get("/discovery", include_in_schema=False)
     def discovery_page():
         return FileResponse(WEB_DIR / "discovery.html")

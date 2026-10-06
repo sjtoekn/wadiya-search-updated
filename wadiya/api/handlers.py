@@ -1,5 +1,6 @@
 """Framework-independent request handlers: (status, json-body). FastAPI only wires these up."""
 from __future__ import annotations
+from urllib.parse import urlsplit
 
 from ..admin.dashboard import build_stats
 from ..search.service import InvalidSearchRequest
@@ -216,7 +217,13 @@ def handle_submit_website(storage, url: str) -> tuple:
     if not is_safe_submission_target(normalized):
         return error(400, "unsafe website URL")
 
-    domain = site_key(normalized)
+    parts = urlsplit(normalized)
+    host = parts.hostname
+
+    if not host:
+        return error(400, "invalid website URL")
+
+    domain = site_key(host)
 
     if not domain:
         return error(400, "invalid website URL")

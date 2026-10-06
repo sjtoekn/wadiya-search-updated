@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Submit a Website – Wadiya.com</title>
+  <meta name="description" content="Submit your public website to Wadiya for automatic discovery and crawling.">
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="discovery">
+  <header class="top">
+    <a class="mark" href="/" aria-label="Wadiya.com home">wadiya<span>.com</span></a>
+    <a class="box" href="/discovery">Discover</a>
+  </header>
+
+  <main class="discovery-main">
+    <section class="website-submit" aria-labelledby="website-submit-title">
+      <div class="website-submit-copy">
+        <p class="discovery-kicker">SUBMIT A WEBSITE</p>
+        <h1 id="website-submit-title">Help Wadiya discover your website.</h1>
+        <p>
+          Website owners can submit a public website for automatic discovery
+          and crawling.
+        </p>
+      </div>
+
+      <form id="websiteSubmitForm" class="website-submit-form" novalidate>
+        <label for="websiteUrl">Website URL</label>
+        <div class="website-submit-row">
+          <input
+            id="websiteUrl"
+            name="url"
+            type="url"
+            inputmode="url"
+            maxlength="2048"
+            autocomplete="url"
+            placeholder="https://example.com"
+            required
+          >
+          <button type="submit" id="websiteSubmitButton">Submit website</button>
+        </div>
+        <div
+          id="websiteSubmitMessage"
+          class="website-submit-message"
+          role="status"
+          aria-live="polite"
+        ></div>
+      </form>
+    </section>
+  </main>
+
+  <script src="/static/submit-website.js"></script>
+</body>
+</html>
