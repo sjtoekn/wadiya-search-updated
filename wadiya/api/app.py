@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ..admin.auth import AdminAuth
@@ -165,7 +166,8 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
 
         preview_limiter.hit(client_key)
 
-        status, body = handlers.handle_preview_website(
+        status, body = await run_in_threadpool(
+            handlers.handle_preview_website,
             settings,
             url,
             fetcher=preview_fetcher,
@@ -211,7 +213,7 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
 
         submit_limiter.hit(client_key)
 
-        status, body = handlers.handle_submit_website(storage, url)
+        status, body = await run_in_threadpool(handlers.handle_submit_website, storage, url)
         return JSONResponse(body, status_code=status)
 
     @app.get("/api/page")
@@ -280,8 +282,9 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
             raise HTTPException(status_code=400, detail="invalid json")
         if not user_sessions:
             raise HTTPException(status_code=503, detail="user authentication is not configured")
-        status, body, token = handlers.handle_user_register(
-            storage, user_sessions, data.get("email"), data.get("password"), data.get("display_name", "")
+        status, body, token = await run_in_threadpool(
+            handlers.handle_user_register,
+            storage, user_sessions, data.get("email"), data.get("password"), data.get("display_name", ""),
         )
         resp = JSONResponse(body, status_code=status)
         if token:
@@ -296,8 +299,9 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
         data = await read_user_auth_body(request)
         if not user_sessions:
             raise HTTPException(status_code=503, detail="user authentication is not configured")
-        status, body, token = handlers.handle_user_login(
-            storage, user_sessions, data.get("email"), data.get("password")
+        status, body, token = await run_in_threadpool(
+            handlers.handle_user_login,
+            storage, user_sessions, data.get("email"), data.get("password"),
         )
         resp = JSONResponse(body, status_code=status)
         if token:
@@ -389,8 +393,9 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
             data = await request.json()
         except Exception:
             raise HTTPException(status_code=400, detail="invalid json")
-        status, body = handlers.handle_user_profile_update(
-            storage, user_id, data.get("display_name") if isinstance(data, dict) else None
+        status, body = await run_in_threadpool(
+            handlers.handle_user_profile_update,
+            storage, user_id, data.get("display_name") if isinstance(data, dict) else None,
         )
         return JSONResponse(body, status_code=status)
 
@@ -418,7 +423,7 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
             raise HTTPException(status_code=400, detail="invalid json")
         password = data.get("password") if isinstance(data, dict) else None
         client = request.client.host if request.client else "unknown"
-        status, body, token = handlers.handle_login(auth, password, client)
+        status, body, token = await run_in_threadpool(handlers.handle_login, auth, password, client)
         resp = JSONResponse(body, status_code=status)
         if token:
             resp.set_cookie(COOKIE, token, **session_cookie_kwargs(settings))
