@@ -36,6 +36,9 @@ def _load_dotenv() -> None:
             "WADIYA_ADMIN_PASSWORD_HASH",
             "WADIYA_SECRET_KEY",
             "WADIYA_COOKIE_SECURE",
+            "WADIYA_GOOGLE_CLIENT_ID",
+            "WADIYA_GOOGLE_CLIENT_SECRET",
+            "WADIYA_GOOGLE_REDIRECT_URI",
         }:
             continue
 
@@ -57,6 +60,9 @@ def _env_bool(name: str, default: bool) -> bool:
 
 @dataclass(frozen=True)
 class Settings:
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_redirect_uri: str = ""
     # --- storage ---
     db_path: str = "data/wadiya.db"
     index_path: str = "data/wadiya_index.db"
@@ -99,9 +105,12 @@ class Settings:
 
     # --- admin ---
     admin_password_hash: str = ""
+    user_session_max_age: int = 8 * 3600
     secret_key: str = ""
     session_max_age: int = 8 * 3600
     cookie_secure: bool = True
+    # Opt-in: run the crawler in a background thread inside the web server process.
+    background_crawler: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -111,8 +120,16 @@ class Settings:
             db_path=e("WADIYA_DB_PATH", d.db_path),
             index_path=e("WADIYA_INDEX_PATH", d.index_path),
             seeds_path=e("WADIYA_SEEDS_PATH", d.seeds_path),
+            google_client_id=e("WADIYA_GOOGLE_CLIENT_ID", d.google_client_id),
+            google_client_secret=e("WADIYA_GOOGLE_CLIENT_SECRET", d.google_client_secret),
+            google_redirect_uri=e("WADIYA_GOOGLE_REDIRECT_URI", d.google_redirect_uri),
             user_agent=e("WADIYA_USER_AGENT", d.user_agent),
             admin_password_hash=e("WADIYA_ADMIN_PASSWORD_HASH", ""),
+            user_session_max_age=int(e("WADIYA_USER_SESSION_MAX_AGE", "28800")),
             secret_key=e("WADIYA_SECRET_KEY", ""),
             cookie_secure=_env_bool("WADIYA_COOKIE_SECURE", True),
+            background_crawler=_env_bool("WADIYA_BACKGROUND_CRAWLER", False),
         )
+
+
+# Google OAuth environment configuration

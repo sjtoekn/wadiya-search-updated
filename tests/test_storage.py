@@ -2,12 +2,12 @@ import sqlite3
 from pathlib import Path
 
 from tests.helpers import TempDirCase, make_doc
-from wadiya.storage.sqlite_store import SQLiteStorage
+from wadiya.storage.sqlite_store import SCHEMA_VERSION, SQLiteStorage
 
 
 
 class MigrationTests(TempDirCase):
-    def test_v0_database_migrates_to_v4(self):
+    def test_v0_database_migrates_to_latest(self):
         db = Path(self.tmp) / "legacy.sqlite"
 
         conn = sqlite3.connect(db)
@@ -46,7 +46,7 @@ class MigrationTests(TempDirCase):
                 )
             }
 
-        self.assertEqual(version, 5)
+        self.assertEqual(version, SCHEMA_VERSION)
         self.assertIn("next_attempt_at", discovered_cols)
         self.assertIn("fail_count", doc_cols)
         self.assertIn("nosnippet", doc_cols)
@@ -66,7 +66,7 @@ class MigrationTests(TempDirCase):
 
 
 class V1MigrationTests(TempDirCase):
-    def test_v1_database_migrates_to_v4(self):
+    def test_v1_database_migrates_to_latest(self):
         db = Path(self.tmp) / "v1.sqlite"
 
         # Build a valid current schema, then reduce it to the v1 state:
@@ -96,7 +96,7 @@ class V1MigrationTests(TempDirCase):
                 )
             }
 
-        self.assertEqual(version, 5)
+        self.assertEqual(version, SCHEMA_VERSION)
         self.assertIn("next_attempt_at", discovered_cols)
         self.assertIn("fail_count", doc_cols)
         self.assertIn("nosnippet", doc_cols)

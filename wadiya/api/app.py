@@ -3,10 +3,11 @@ without a web framework. Requires: pip install -r requirements.txt"""
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -19,7 +20,18 @@ from ..storage.sqlite_store import SQLiteStorage
 from . import handlers
 from .limits import MAX_LOGIN_BODY, BodyLimiter, BodyTooLarge, SubmitLimiter
 from ..crawler.fetcher import Fetcher
+from ..crawler.robots import RobotsChecker
+from ..crawler.scheduler import ContinuousCrawler
+from ..crawler.seeds import load_seeds
 from .security import COOKIE_NAME as COOKIE, SECURITY_HEADERS, session_cookie_kwargs
+from .user_auth import (
+    UserSessionManager,
+    build_google_authorization_url,
+    create_google_state,
+    google_exchange_code,
+    google_userinfo,
+    verify_google_state,
+)
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -32,12 +44,52 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
     indexer.init()
     service = SearchService(settings, storage, indexer, ranker or BM25Ranker())
     auth = AdminAuth(settings)
+    user_sessions = UserSessionManager(settings.secret_key, settings.user_session_max_age) if len(settings.secret_key) >= 32 else None
     submit_limiter = SubmitLimiter()
     preview_limiter = SubmitLimiter(limit=5, window=600)
+    user_auth_limiter = SubmitLimiter(limit=10, window=600)
     preview_fetcher = fetcher or Fetcher(settings)
 
     app = FastAPI(title="Wadiya", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings, app.state.storage, app.state.indexer, app.state.auth = settings, storage, indexer, auth
+    app.state.user_sessions = user_sessions
+
+    # Background crawling is OPT-IN (WADIYA_BACKGROUND_CRAWLER=true). Prefer running
+    # `python -m wadiya crawl --continuous` as a separate process.
+    def _run_continuous_crawler():
+        import time
+        from ..crawler.lock import CrawlAlreadyRunning
+
+        delay = 30.0
+        while True:
+            try:
+                seeds = load_seeds(settings.seeds_path)
+                robots = RobotsChecker(
+                    preview_fetcher,
+                    settings.robots_token,
+                    settings.robots_cache_ttl,
+                    settings.max_robots_bytes,
+                )
+                scheduler = ContinuousCrawler(settings, storage, indexer, preview_fetcher, robots)
+                for cycle in scheduler.run(seeds, interval=60):
+                    print("background crawl cycle:", cycle.number, flush=True)
+                return
+            except CrawlAlreadyRunning:
+                print("background crawler: another crawler holds the lock; retrying", flush=True)
+            except Exception as e:
+                print("background crawler error:", type(e).__name__, e, flush=True)
+            time.sleep(delay)
+            delay = min(delay * 2, 900.0)
+
+    app.state.crawler_thread = None
+    if settings.background_crawler:
+        crawler_thread = threading.Thread(
+            target=_run_continuous_crawler,
+            name="wadiya-continuous-crawler",
+            daemon=True,
+        )
+        crawler_thread.start()
+        app.state.crawler_thread = crawler_thread
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -183,6 +235,165 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
     def health():
         return {"status": "ok"}
 
+    # ------------------------------------------------------------------ public user API
+    async def read_user_auth_body(request: Request):
+        if not request.headers.get("content-type", "").lower().startswith("application/json"):
+            raise HTTPException(status_code=415, detail="expected application/json")
+        limiter = BodyLimiter(MAX_LOGIN_BODY)
+        try:
+            limiter.declare(request.headers.get("content-length"))
+            async for chunk in request.stream():
+                limiter.feed(chunk)
+        except BodyTooLarge:
+            raise HTTPException(status_code=413, detail="request body too large")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid content-length")
+        try:
+            data = json.loads(limiter.body() or b"null")
+        except Exception:
+            raise HTTPException(status_code=400, detail="invalid json")
+        if not isinstance(data, dict):
+            raise HTTPException(status_code=400, detail="invalid json")
+        return data
+
+    def check_user_auth_limit(request: Request, action: str):
+        client = request.client.host if request.client else "unknown"
+        key = action + ":" + client
+        if not user_auth_limiter.allowed(key):
+            retry_after = user_auth_limiter.retry_after(key)
+            response = JSONResponse(
+                {"error": {"message": "too many authentication attempts; try again later"}},
+                status_code=429,
+            )
+            response.headers["Retry-After"] = str(retry_after)
+            return response
+        user_auth_limiter.hit(key)
+        return None
+
+    @app.post("/api/auth/register")
+    async def user_register(request: Request):
+        limited = check_user_auth_limit(request, "register")
+        if limited:
+            return limited
+        data = await read_user_auth_body(request)
+        if not isinstance(data, dict):
+            raise HTTPException(status_code=400, detail="invalid json")
+        if not user_sessions:
+            raise HTTPException(status_code=503, detail="user authentication is not configured")
+        status, body, token = handlers.handle_user_register(
+            storage, user_sessions, data.get("email"), data.get("password"), data.get("display_name", "")
+        )
+        resp = JSONResponse(body, status_code=status)
+        if token:
+            resp.set_cookie("wadiya_user", token, **session_cookie_kwargs(settings))
+        return resp
+
+    @app.post("/api/auth/login")
+    async def user_login(request: Request):
+        limited = check_user_auth_limit(request, "login")
+        if limited:
+            return limited
+        data = await read_user_auth_body(request)
+        if not user_sessions:
+            raise HTTPException(status_code=503, detail="user authentication is not configured")
+        status, body, token = handlers.handle_user_login(
+            storage, user_sessions, data.get("email"), data.get("password")
+        )
+        resp = JSONResponse(body, status_code=status)
+        if token:
+            resp.set_cookie("wadiya_user", token, **session_cookie_kwargs(settings))
+        return resp
+
+
+    @app.get("/api/auth/google/login")
+    def google_login():
+        if not user_sessions:
+            raise HTTPException(status_code=503, detail="user authentication is not configured")
+        if not settings.google_client_id or not settings.google_client_secret or not settings.google_redirect_uri:
+            raise HTTPException(status_code=503, detail="Google authentication is not configured")
+        state = create_google_state(settings.secret_key)
+        return RedirectResponse(
+            build_google_authorization_url(
+                settings.google_client_id,
+                settings.google_redirect_uri,
+                state,
+            ),
+            status_code=302,
+        )
+
+    @app.get("/api/auth/google/callback")
+    def google_callback(code: str = "", state: str = "", error: str = ""):
+        if error:
+            return RedirectResponse("/login?error=google_denied", status_code=302)
+        if not settings.google_client_id or not settings.google_client_secret or not settings.google_redirect_uri:
+            raise HTTPException(status_code=503, detail="Google authentication is not configured")
+        if not code or not verify_google_state(settings.secret_key, state):
+            return RedirectResponse("/login?error=google_state", status_code=302)
+
+        try:
+            tokens = google_exchange_code(
+                settings.google_client_id,
+                settings.google_client_secret,
+                settings.google_redirect_uri,
+                code,
+            )
+            access_token = tokens.get("access_token")
+            if not isinstance(access_token, str) or not access_token:
+                raise ValueError("missing Google access token")
+
+            info = google_userinfo(access_token)
+            subject = info.get("sub")
+            email = info.get("email")
+            if info.get("email_verified") is not True:
+                raise ValueError("Google email is not verified")
+
+            status, body, token = handlers.handle_google_user(
+                storage,
+                user_sessions,
+                subject,
+                email,
+                info.get("name", ""),
+            )
+            if not token:
+                return RedirectResponse("/login?error=google_account", status_code=302)
+
+            resp = RedirectResponse("/profile", status_code=302)
+            resp.set_cookie("wadiya_user", token, **session_cookie_kwargs(settings))
+            return resp
+        except Exception:
+            return RedirectResponse("/login?error=google_failed", status_code=302)
+
+    @app.post("/api/auth/logout")
+    def user_logout():
+        resp = JSONResponse({"ok": True})
+        resp.delete_cookie("wadiya_user", path="/")
+        return resp
+
+    def require_user(request: Request):
+        if not user_sessions:
+            raise HTTPException(status_code=503, detail="user authentication is not configured")
+        user_id = user_sessions.verify(request.cookies.get("wadiya_user"))
+        if not user_id:
+            raise HTTPException(status_code=401, detail="authentication required")
+        return user_id
+
+    @app.get("/api/auth/me")
+    def user_me(request: Request):
+        status, body = handlers.handle_user_profile(storage, require_user(request))
+        return JSONResponse(body, status_code=status)
+
+    @app.patch("/api/auth/profile")
+    async def user_profile(request: Request):
+        user_id = require_user(request)
+        try:
+            data = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="invalid json")
+        status, body = handlers.handle_user_profile_update(
+            storage, user_id, data.get("display_name") if isinstance(data, dict) else None
+        )
+        return JSONResponse(body, status_code=status)
+
     # ------------------------------------------------------------------ admin API
     def require_admin(request: Request):
         if not auth.verify_token(request.cookies.get(COOKIE)):
@@ -254,6 +465,18 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
     @app.get("/sitemap.xml", include_in_schema=False)
     def sitemap_xml():
         return FileResponse(WEB_DIR / "sitemap.xml", media_type="application/xml")
+
+    @app.get("/login", include_in_schema=False)
+    def login_page():
+        return FileResponse(WEB_DIR / "login.html")
+
+    @app.get("/register", include_in_schema=False)
+    def register_page():
+        return FileResponse(WEB_DIR / "register.html")
+
+    @app.get("/profile", include_in_schema=False)
+    def profile_page():
+        return FileResponse(WEB_DIR / "profile.html")
 
     @app.get("/admin", include_in_schema=False)
     def admin_page():          # static shell only; every data endpoint above is protected

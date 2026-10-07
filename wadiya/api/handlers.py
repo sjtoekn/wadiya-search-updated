@@ -1,5 +1,7 @@
 """Framework-independent request handlers: (status, json-body). FastAPI only wires these up."""
 from __future__ import annotations
+
+import secrets
 from urllib.parse import urlsplit
 
 from ..admin.dashboard import build_stats
@@ -8,6 +10,7 @@ from ..crawler.extractor import extract
 from ..crawler.fetcher import Fetcher
 from ..crawler.keywords import extract_keywords
 from ..crawler.urls import normalize_url, site_key, looks_crawlable, is_safe_submission_target
+from .user_auth import MIN_PASSWORD_LEN, MAX_PASSWORD_LEN, hash_password, verify_password
 
 
 def error(status: int, message: str) -> tuple:
@@ -214,6 +217,8 @@ def handle_submit_website(storage, url: str) -> tuple:
     if not normalized or not looks_crawlable(normalized):
         return error(400, "invalid or unsupported website URL")
 
+    # Automatic moderation gate: only crawlable and SSRF-safe public URLs
+    # are admitted to the automatic discovery/crawl queue.
     if not is_safe_submission_target(normalized):
         return error(400, "unsafe website URL")
 
@@ -236,7 +241,7 @@ def handle_submit_website(storage, url: str) -> tuple:
             "submitted": False,
             "status": existing.get("status", "pending"),
             "url": existing.get("url", normalized),
-            "domain": existing.get("domain", domain),
+            "domain": normalized,
             "message": "This website is already in the discovery queue.",
         }
 
@@ -254,7 +259,7 @@ def handle_submit_website(storage, url: str) -> tuple:
             "submitted": False,
             "status": existing.get("status", "pending") if existing else "pending",
             "url": normalized,
-            "domain": domain,
+            "domain": normalized,
             "message": "This website is already in the discovery queue.",
         }
 
@@ -263,7 +268,7 @@ def handle_submit_website(storage, url: str) -> tuple:
         "submitted": True,
         "status": "pending",
         "url": normalized,
-        "domain": domain,
+        "domain": normalized,
         "message": "Website submitted successfully. It will be crawled automatically.",
     }
 
@@ -310,3 +315,100 @@ def handle_discovery(storage, domain: str) -> tuple:
         return error(404, "website not found")
 
     return 200, result
+
+
+def handle_user_register(storage, sessions, email, password, display_name):
+    if not isinstance(email, str) or not isinstance(password, str):
+        status, body = error(400, "email and password are required")
+        return status, body, None
+    email = email.strip().lower()
+    display_name = display_name.strip() if isinstance(display_name, str) else ""
+    if len(email) < 3 or len(email) > 254 or "@" not in email:
+        status, body = error(400, "invalid email")
+        return status, body, None
+    if len(password) < MIN_PASSWORD_LEN or len(password) > MAX_PASSWORD_LEN:
+        status, body = error(400, f"password must be {MIN_PASSWORD_LEN}-{MAX_PASSWORD_LEN} characters")
+        return status, body, None
+    if len(display_name) > 100:
+        status, body = error(400, "display name is too long")
+        return status, body, None
+    if storage.get_user_by_email(email):
+        status, body = error(409, "email is already registered")
+        return status, body, None
+    try:
+        user = storage.create_user(email, hash_password(password), display_name)
+    except Exception:
+        status, body = error(409, "email is already registered")
+        return status, body, None
+    token = sessions.issue(user.id)
+    return 201, {"user": {"id": user.id, "email": user.email, "display_name": user.display_name}}, token
+
+
+def handle_user_login(storage, sessions, email, password):
+    if not isinstance(email, str) or not isinstance(password, str):
+        status, body = error(400, "email and password are required")
+        return status, body, None
+    user = storage.get_user_by_email(email.strip().lower())
+    if not user or user.status != "active" or not verify_password(password, user.password_hash):
+        status, body = error(401, "invalid credentials")
+        return status, body, None
+    return 200, {"user": {"id": user.id, "email": user.email, "display_name": user.display_name}}, sessions.issue(user.id)
+
+
+
+def handle_google_user(storage, sessions, google_subject, email, display_name):
+    if not isinstance(google_subject, str) or not google_subject:
+        return 400, {"error": {"message": "invalid Google identity"}}, None
+    if not isinstance(email, str):
+        return 400, {"error": {"message": "Google account has no email"}}, None
+
+    email = email.strip().lower()
+    display_name = display_name.strip() if isinstance(display_name, str) else ""
+    if len(email) < 3 or len(email) > 254 or "@" not in email:
+        return 400, {"error": {"message": "invalid Google email"}}, None
+    if len(display_name) > 100:
+        display_name = display_name[:100]
+
+    user = storage.get_user_by_google_subject(google_subject)
+
+    if not user:
+        user = storage.get_user_by_email(email)
+        if user:
+            if user.status != "active":
+                return 403, {"error": {"message": "account is not active"}}, None
+            user = storage.link_google_subject(user.id, google_subject)
+        else:
+            # Google-only accounts receive an unreachable random password hash.
+            user = storage.create_user(
+                email,
+                hash_password(secrets.token_urlsafe(32)),
+                display_name or email.split("@", 1)[0],
+            )
+            user = storage.link_google_subject(user.id, google_subject)
+
+    if not user or user.status != "active":
+        return 401, {"error": {"message": "authentication required"}}, None
+
+    return 200, {
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "display_name": user.display_name,
+        }
+    }, sessions.issue(user.id)
+
+
+def handle_user_profile(storage, user_id):
+    user = storage.get_user(user_id)
+    if not user or user.status != "active":
+        return error(401, "authentication required")
+    return 200, {"user": {"id": user.id, "email": user.email, "display_name": user.display_name}}
+
+
+def handle_user_profile_update(storage, user_id, display_name):
+    if not isinstance(display_name, str) or len(display_name.strip()) > 100:
+        return error(400, "invalid display name")
+    user = storage.update_user_profile(user_id, display_name)
+    if not user or user.status != "active":
+        return error(401, "authentication required")
+    return 200, {"user": {"id": user.id, "email": user.email, "display_name": user.display_name}}
