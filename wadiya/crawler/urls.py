@@ -88,6 +88,113 @@ def looks_crawlable(url: str) -> bool:
     return dot == -1 or path[dot:] not in SKIP_EXTENSIONS
 
 
+def discovery_risk(url: str) -> tuple[float, str | None]:
+    """Cheap deterministic discovery risk score; no network/DNS access."""
+    try:
+        parts = urlsplit(normalize_url(url) or "")
+        host = (parts.hostname or "").lower()
+        path = (parts.path or "").lower()
+        query = parts.query or ""
+    except (TypeError, ValueError):
+        return 1.0, "invalid_url"
+
+    if not host:
+        return 1.0, "missing_host"
+
+    score = 0.0
+    reasons = []
+
+    if len(host) > 100:
+        score += 0.20
+        reasons.append("long_domain")
+    if host.startswith("xn--") or ".xn--" in host:
+        score += 0.15
+        reasons.append("punycode_domain")
+    if host.replace(".", "").isdigit():
+        score += 0.20
+        reasons.append("ip_literal")
+    if path.endswith((
+        ".exe", ".scr", ".bat", ".cmd", ".msi", ".dll",
+        ".zip", ".rar", ".7z", ".iso",
+    )):
+        score += 0.45
+        reasons.append("executable_or_archive")
+    if len(query) > 500:
+        score += 0.15
+        reasons.append("large_query")
+    if query.count("&") >= 10:
+        score += 0.15
+        reasons.append("many_query_parameters")
+
+    return min(1.0, score), ",".join(reasons) if reasons else None
+
+
+def discovery_admission(
+    url: str,
+    *,
+    auto_max: float = 0.30,
+    quarantine_max: float = 0.70,
+) -> tuple[str, float, str | None]:
+    score, reason = discovery_risk(url)
+    if score <= auto_max:
+        return "auto", score, reason
+    if score <= quarantine_max:
+        return "quarantine", score, reason
+    return "blocked", score, reason
+
+
+def discovery_risk(url: str) -> tuple[float, str | None]:
+    """Cheap deterministic discovery risk score; no DNS/network access."""
+    try:
+        parts = urlsplit(normalize_url(url) or "")
+        host = (parts.hostname or "").lower()
+        path = (parts.path or "").lower()
+        query = parts.query or ""
+    except (TypeError, ValueError):
+        return 1.0, "invalid_url"
+
+    if not host:
+        return 1.0, "missing_host"
+
+    score = 0.0
+    reasons = []
+
+    if len(host) > 100:
+        score += 0.20
+        reasons.append("long_domain")
+    if host.startswith("xn--") or ".xn--" in host:
+        score += 0.15
+        reasons.append("punycode_domain")
+    if host.replace(".", "").isdigit():
+        score += 0.20
+        reasons.append("ip_literal")
+    if path.endswith((".exe", ".scr", ".bat", ".cmd", ".msi", ".dll", ".iso")):
+        score += 0.45
+        reasons.append("executable_or_image")
+    if len(query) > 500:
+        score += 0.15
+        reasons.append("large_query")
+    if query.count("&") >= 10:
+        score += 0.15
+        reasons.append("many_query_parameters")
+
+    return min(1.0, score), ",".join(reasons) if reasons else None
+
+
+def discovery_admission(
+    url: str,
+    *,
+    auto_max: float = 0.30,
+    quarantine_max: float = 0.70,
+) -> tuple[str, float, str | None]:
+    score, reason = discovery_risk(url)
+    if score <= auto_max:
+        return "auto", score, reason
+    if score <= quarantine_max:
+        return "quarantine", score, reason
+    return "blocked", score, reason
+
+
 def is_safe_submission_target(url: str) -> bool:
     """Reject obviously unsafe submission targets without performing DNS."""
     try:

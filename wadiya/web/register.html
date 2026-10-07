@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Create account — Wadiya</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><main class="login"><h1>Create account</h1>
+<form id="form"><label>Display name</label><input id="name" maxlength="100" autocomplete="name">
+<label>Email</label><input id="email" type="email" maxlength="254" autocomplete="email" required>
+<label>Password</label><input id="password" type="password" minlength="12" maxlength="256" autocomplete="new-password" required>
+<button type="submit">Create account</button><p id="msg" class="status error" role="alert"></p></form>
+<p style="margin:16px 0;text-align:center">or</p><p><a href="/api/auth/google/login">Continue with Google</a></p>Already registered? <a href="/login">Sign in</a></p></main>
+<script src="/static/auth.js"></script></body></html>

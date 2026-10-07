@@ -279,10 +279,122 @@ class ServiceTests(SearchStackCase):
         r = self.svc.search("zzzzqqq")
         self.assertEqual((r["result_count"], r["results"], r["total_pages"]), (0, [], 0))
         self.assertEqual(self.storage.search_stats()["search_count"], 1)
-        self.assertEqual(self.storage.recent_queries()[0]["query"], "zzzzqqq")
+
+        recent = self.storage.recent_queries()
+        self.assertEqual(len(recent), 1)
+        self.assertEqual(recent[0]["result_count"], 0)
+        self.assertEqual(len(recent[0]["query"]), 64)
 
     def test_index_storage_desync_is_tolerated(self):
         self.seed(2)
         self.indexer.index([__import__("wadiya.indexer.base", fromlist=["x"]).IndexDocument(999, "https://ghost/", "ghost", "ghost common", "", "", "common")])
         r = self.svc.search("common")
         self.assertTrue(all(x["domain"] != "ghost" for x in r["results"]))
+
+
+class QueryOperatorRegressionTests(SearchStackCase):
+    def test_site_operator_matches_apex_www_and_subdomains(self):
+        self.add(
+            url="https://x.com/home",
+            domain="x.com",
+            content="target",
+            chash="site-x-apex",
+        )
+        self.add(
+            url="https://www.x.com/home",
+            domain="www.x.com",
+            content="target",
+            chash="site-x-www",
+        )
+        self.add(
+            url="https://blog.x.com/post",
+            domain="blog.x.com",
+            content="target",
+            chash="site-x-blog",
+        )
+        self.add(
+            url="https://notx.com/home",
+            domain="notx.com",
+            content="target",
+            chash="site-notx",
+        )
+        self.build()
+
+        r = self.svc.search("site:x.com")
+
+        self.assertEqual(
+            {x["url"] for x in r["results"]},
+            {
+                "https://x.com/home",
+                "https://www.x.com/home",
+                "https://blog.x.com/post",
+            },
+        )
+
+    def test_negative_only_query_does_not_create_empty_fts_match(self):
+        self.add(
+            url="https://e.org/keep",
+            content="python guide",
+        )
+        self.add(
+            url="https://e.org/remove",
+            content="django guide",
+        )
+        self.build()
+
+        r = self.svc.search("-django")
+
+        self.assertEqual(
+            [x["url"] for x in r["results"]],
+            ["https://e.org/keep"],
+        )
+
+    def test_site_only_and_negative_only_can_be_combined(self):
+        self.add(
+            url="https://x.com/keep",
+            domain="x.com",
+            content="python guide",
+        )
+        self.add(
+            url="https://blog.x.com/remove",
+            domain="blog.x.com",
+            content="python django guide",
+        )
+        self.add(
+            url="https://other.com/keep",
+            domain="other.com",
+            content="python guide",
+        )
+        self.build()
+
+        r = self.svc.search("site:x.com -django")
+
+        self.assertEqual(
+            [x["url"] for x in r["results"]],
+            ["https://x.com/keep"],
+        )
+
+    def test_filetype_uses_url_extension_not_content(self):
+        self.add(
+            url="https://e.org/real.pdf",
+            content="ordinary python guide",
+        )
+        self.add(
+            url="https://e.org/page.html",
+            content="this text mentions a .pdf file",
+        )
+        self.add(
+            url="https://e.org/download.pdf?version=2",
+            content="another guide",
+        )
+        self.build()
+
+        r = self.svc.search("filetype:pdf")
+
+        self.assertEqual(
+            {x["url"] for x in r["results"]},
+            {
+                "https://e.org/real.pdf",
+                "https://e.org/download.pdf?version=2",
+            },
+        )

@@ -85,10 +85,19 @@ class Settings:
     max_robots_bytes: int = 512 * 1024
     default_crawl_delay: float = 1.0
     freshness_interval: float = 86400.0
+    query_log_sample_rate: float = 1.0
+    query_log_retention_days: int = 30
     max_crawl_delay: float = 10.0
     max_redirects: int = 5
     max_content_chars: int = 200_000
     max_consecutive_failures: int = 3     # failed crawls in a row before an existing doc is dropped as 'unreachable'
+
+    # --- discovery admission / anti-explosion ---
+    discovery_auto_risk_max: float = 0.30
+    discovery_quarantine_risk_max: float = 0.70
+    discovery_max_new_domains_per_cycle: int = 100
+    discovery_max_urls_per_domain: int = 250
+    discovery_max_external_domains_per_page: int = 3
     discovery_retry_base_delay: float = 60.0
     discovery_retry_max_delay: float = 24 * 3600.0
     robots_cache_ttl: int = 3600
@@ -129,6 +138,8 @@ class Settings:
             secret_key=e("WADIYA_SECRET_KEY", ""),
             cookie_secure=_env_bool("WADIYA_COOKIE_SECURE", True),
             background_crawler=_env_bool("WADIYA_BACKGROUND_CRAWLER", False),
+            query_log_sample_rate=max(0.0, min(1.0, float(e("WADIYA_QUERY_LOG_SAMPLE_RATE", "1.0")))),
+            query_log_retention_days=max(1, int(e("WADIYA_QUERY_LOG_RETENTION_DAYS", "30"))),
         )
 
 

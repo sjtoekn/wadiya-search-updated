@@ -1,5 +1,7 @@
 import unittest
 import os
+from dataclasses import fields
+from types import SimpleNamespace
 
 from tests.crawler_fixtures import Env, page, site_routes
 from tests.helpers import TempDirCase
@@ -904,14 +906,8 @@ class ContinuousSchedulerIntegrationTests(TempDirCase):
         discovered_site = None
 
         with MockSite(source_routes) as source_site:
-            with MockSite(discovered_routes) as discovered_site:
-                discovered_root = (
-                    discovered_site.base.replace(
-                        "127.0.0.1:",
-                        "localhost:",
-                    )
-                    + "/"
-                )
+            with MockSite(discovered_routes, hostname="discovered.test") as discovered_site:
+                discovered_root = discovered_site.base + "/"
 
                 source_routes["/"] = (
                     200,
@@ -922,8 +918,13 @@ class ContinuousSchedulerIntegrationTests(TempDirCase):
                     ),
                 )
 
+                scheduler_settings = SimpleNamespace(
+                    **{f.name: getattr(self.settings, f.name) for f in fields(self.settings)},
+                    _debug_test_exceptions=True,
+                )
+
                 scheduler = ContinuousCrawler(
-                    self.settings,
+                    scheduler_settings,
                     self.storage,
                     None,
                     Env(

@@ -2,12 +2,14 @@
 so the crawler process and the API process can safely share the same file."""
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Sequence
 
 from .base import Document, QueueItem, SaveResult, Storage, User, now_iso
+from ..crawler.urls import discovery_admission
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -30,6 +32,24 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 CREATE INDEX IF NOT EXISTS idx_documents_domain ON documents(domain);
 CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(content_hash);
+
+CREATE TABLE IF NOT EXISTS document_images (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  document_id INTEGER NOT NULL,
+  image_url TEXT NOT NULL,
+  source_page_url TEXT NOT NULL,
+  source_domain TEXT NOT NULL,
+  alt_text TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  position INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  UNIQUE(document_id, image_url),
+  FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_document_images_document
+  ON document_images(document_id);
+CREATE INDEX IF NOT EXISTS idx_document_images_domain
+  ON document_images(source_domain);
 
 CREATE TABLE IF NOT EXISTS urls (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,7 +147,7 @@ _COUNTED = ("done", "duplicate", "noindex")   # statuses that consumed a page of
 QUERY_LOG_KEEP = 10_000
 
 # Database schema version. Increment this when a new migration is added.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 
 
 def _doc(row: sqlite3.Row) -> Document:
@@ -316,6 +336,103 @@ class SQLiteStorage(Storage):
                 c.execute("PRAGMA user_version = 7")
                 current_version = 7
 
+            # Migration 8: scalable discovery admission / risk controls.
+            if current_version < 8:
+                cols = {
+                    r[1]
+                    for r in c.execute("PRAGMA table_info(discovered_sites)")
+                }
+                additions = {
+                    "risk_score": "REAL NOT NULL DEFAULT 0",
+                    "admission": "TEXT NOT NULL DEFAULT 'auto'",
+                    "risk_reason": "TEXT",
+                    "approved_at": "TEXT",
+                    "blocked_at": "TEXT",
+                }
+                for name, definition in additions.items():
+                    if name not in cols:
+                        c.execute(
+                            f"ALTER TABLE discovered_sites ADD COLUMN {name} {definition}"
+                        )
+
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_discovered_sites_admission "
+                    "ON discovered_sites(admission, id)"
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_discovered_sites_risk "
+                    "ON discovered_sites(risk_score, id)"
+                )
+                c.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS discovery_domains (
+                      domain TEXT PRIMARY KEY,
+                      admission TEXT NOT NULL DEFAULT 'auto',
+                      risk_score REAL NOT NULL DEFAULT 0,
+                      risk_reason TEXT,
+                      first_seen_at TEXT NOT NULL,
+                      updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_discovery_domains_admission "
+                    "ON discovery_domains(admission, domain)"
+                )
+                c.execute("PRAGMA user_version = 8")
+                current_version = 8
+
+            # Safety repair: schema version 8 may already be recorded
+            # while discovery_domains is missing from an older DB.
+            c.execute(
+                """
+                CREATE TABLE IF NOT EXISTS discovery_domains (
+                  domain TEXT PRIMARY KEY,
+                  admission TEXT NOT NULL DEFAULT 'auto',
+                  risk_score REAL NOT NULL DEFAULT 0,
+                  risk_reason TEXT,
+                  first_seen_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                )
+                """
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_discovery_domains_admission "
+                "ON discovery_domains(admission, domain)"
+            )
+
+            # Migration 9: persist crawled image candidates separately from documents.
+            if current_version < 9:
+                c.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS document_images (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      document_id INTEGER NOT NULL,
+                      image_url TEXT NOT NULL,
+                      source_page_url TEXT NOT NULL,
+                      source_domain TEXT NOT NULL,
+                      alt_text TEXT NOT NULL DEFAULT '',
+                      title TEXT NOT NULL DEFAULT '',
+                      position INTEGER NOT NULL DEFAULT 0,
+                      created_at TEXT NOT NULL,
+                      UNIQUE(document_id, image_url),
+                      FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
+                    )
+                    """
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "idx_document_images_document "
+                    "ON document_images(document_id)"
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "idx_document_images_domain "
+                    "ON document_images(source_domain)"
+                )
+                c.execute("PRAGMA user_version = 9")
+                current_version = 9
+
             if current_version != SCHEMA_VERSION:
                 raise RuntimeError(
                     f"database migration incomplete: "
@@ -380,6 +497,181 @@ class SQLiteStorage(Storage):
             return User(**dict(r)) if r else None
 
     # ------------------------------------------------------------------ documents
+    @staticmethod
+    def _replace_document_images(c, document_id: int, images) -> None:
+        c.execute(
+            "DELETE FROM document_images WHERE document_id=?",
+            (document_id,),
+        )
+
+        now = now_iso()
+        for position, image in enumerate(images or []):
+            if not isinstance(image, dict):
+                continue
+
+            image_url = str(image.get("image_url") or "").strip()
+            if not image_url:
+                continue
+
+            c.execute(
+                """
+                INSERT OR IGNORE INTO document_images (
+                  document_id,
+                  image_url,
+                  source_page_url,
+                  source_domain,
+                  alt_text,
+                  title,
+                  position,
+                  created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    document_id,
+                    image_url,
+                    str(image.get("source_page_url") or "").strip(),
+                    str(image.get("source_domain") or "").strip(),
+                    str(image.get("alt_text") or "").strip(),
+                    str(image.get("title") or "").strip(),
+                    position,
+                    now,
+                ),
+            )
+
+    @staticmethod
+    def _delete_document_images(c, document_ids) -> None:
+        ids = [int(i) for i in document_ids if i is not None]
+        if not ids:
+            return
+        placeholders = ",".join("?" * len(ids))
+        c.execute(
+            f"DELETE FROM document_images WHERE document_id IN ({placeholders})",
+            ids,
+        )
+
+    def get_document_images(self, document_id: int) -> list:
+        with self._conn() as c:
+            rows = c.execute(
+                """
+                SELECT image_url, source_page_url, source_domain,
+                       alt_text, title, position
+                FROM document_images
+                WHERE document_id=?
+                ORDER BY position, id
+                """,
+                (document_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def documents_needing_image_backfill(
+        self,
+        limit: int = 100,
+        after_id: int = 0,
+    ):
+        """Return active documents needing images after a document-id cursor."""
+        limit = max(1, int(limit))
+        after_id = max(0, int(after_id))
+        with self._conn() as c:
+            rows = c.execute(
+                """
+                SELECT d.id, d.url, d.canonical_url, d.domain
+                FROM documents d
+                WHERE d.status='ok'
+                  AND d.id > ?
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM document_images di
+                    WHERE di.document_id=d.id
+                  )
+                ORDER BY d.id
+                LIMIT ?
+                """,
+                (after_id, limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def replace_document_images(self, document_id: int, images) -> int:
+        """Replace only a document's image rows; never modifies the document itself."""
+        with self._conn(write=True) as c:
+            self._replace_document_images(c, int(document_id), images)
+            row = c.execute(
+                "SELECT count(*) FROM document_images WHERE document_id=?",
+                (int(document_id),),
+            ).fetchone()
+            return int(row[0]) if row else 0
+
+    def search_images(self, query: str, limit: int = 50, offset: int = 0) -> list:
+        """Search image metadata using whole-word/phrase matching."""
+        import re
+
+        query = (query or "").strip()
+        if not query:
+            return []
+
+        limit = max(1, int(limit))
+        offset = max(0, int(offset))
+
+        # First use SQL LIKE only as a broad candidate filter.
+        # Final matching is done with word boundaries so "luma" does not
+        # match substrings such as "Nalumango".
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+
+        try:
+            matcher = re.compile(
+                rf"(?<!\w){re.escape(query)}(?!\w)",
+                re.IGNORECASE,
+            )
+        except re.error:
+            return []
+
+        with self._conn() as c:
+            rows = c.execute(
+                """
+                SELECT
+                  di.id,
+                  di.document_id,
+                  di.image_url,
+                  di.source_page_url,
+                  di.source_domain,
+                  di.alt_text,
+                  di.title,
+                  d.title AS page_title,
+                  d.description AS page_description
+                FROM document_images di
+                JOIN documents d ON d.id = di.document_id
+                WHERE d.status='ok'
+                  AND (
+                    di.alt_text LIKE ? ESCAPE '\\'
+                    OR di.title LIKE ? ESCAPE '\\'
+                    OR d.title LIKE ? ESCAPE '\\'
+                    OR d.description LIKE ? ESCAPE '\\'
+                  )
+                ORDER BY di.id DESC
+                """,
+                (
+                    pattern,
+                    pattern,
+                    pattern,
+                    pattern,
+                ),
+            ).fetchall()
+
+        matched = []
+        for row in rows:
+            values = (
+                row["alt_text"],
+                row["title"],
+                row["page_title"],
+                row["page_description"],
+            )
+            if any(matcher.search(str(value or "")) for value in values):
+                matched.append(dict(row))
+
+        return matched[offset:offset + limit]
+
+    # ------------------------------------------------------------------ documents
     def save_document(self, doc: Document) -> SaveResult:
         now = now_iso()
         vals = {k: getattr(doc, k) for k in _DOC_COLS}
@@ -399,8 +691,10 @@ class SQLiteStorage(Storage):
                         "UPDATE documents SET crawled_at=?, fail_count=0, nosnippet=? WHERE id=?",
                         (now, int(bool(doc.nosnippet)), ex["id"]),
                     )
+                    self._replace_document_images(c, ex["id"], doc.images)
                     return SaveResult("unchanged", ex["id"])
                 self._update(c, ex["id"], vals, now)
+                self._replace_document_images(c, ex["id"], doc.images)
                 return SaveResult("updated" if active else "reactivated", ex["id"])
 
             # only ACTIVE documents can make a new page a duplicate
@@ -411,11 +705,13 @@ class SQLiteStorage(Storage):
             byurl = c.execute("SELECT id, status FROM documents WHERE url=?", (doc.url,)).fetchone()
             if byurl:   # same URL, canonical changed
                 self._update(c, byurl["id"], vals, now)
+                self._replace_document_images(c, byurl["id"], doc.images)
                 return SaveResult("updated" if byurl["status"] == "ok" else "reactivated", byurl["id"])
 
             cur = c.execute(
                 f"INSERT INTO documents ({','.join(_DOC_COLS)}) VALUES ({','.join('?' * len(_DOC_COLS))})",
                 [vals[k] for k in _DOC_COLS])
+            self._replace_document_images(c, cur.lastrowid, doc.images)
             return SaveResult("inserted", cur.lastrowid)
 
     @staticmethod
@@ -438,6 +734,7 @@ class SQLiteStorage(Storage):
             ids = [r["id"] for r in self._match_active(c, urls, by_canonical)]
             if ids:
                 self._deactivate(c, ids, status, now_iso())
+                self._delete_document_images(c, ids)
             return ids
 
     def record_fetch_failure(self, urls, threshold: int) -> list:
@@ -535,7 +832,9 @@ class SQLiteStorage(Storage):
         source: str,
         status: str = "pending",
     ) -> bool:
+        admission, risk_score, risk_reason = discovery_admission(url)
         now = now_iso()
+
         with self._conn(write=True) as c:
             existing = c.execute(
                 "SELECT id FROM discovered_sites WHERE url=?",
@@ -549,14 +848,54 @@ class SQLiteStorage(Storage):
                 )
                 return False
 
+            domain_row = c.execute(
+                "SELECT admission, risk_score, risk_reason "
+                "FROM discovery_domains WHERE domain=?",
+                (domain,),
+            ).fetchone()
+
+            if domain_row:
+                admission = domain_row["admission"]
+                risk_score = float(domain_row["risk_score"] or 0)
+                risk_reason = domain_row["risk_reason"]
+            else:
+                c.execute(
+                    """
+                    INSERT INTO discovery_domains (
+                      domain, admission, risk_score, risk_reason,
+                      first_seen_at, updated_at
+                    )
+                    VALUES (?,?,?,?,?,?)
+                    """,
+                    (
+                        domain,
+                        admission,
+                        risk_score,
+                        risk_reason,
+                        now,
+                        now,
+                    ),
+                )
+
             c.execute(
                 """
                 INSERT INTO discovered_sites (
-                  url, domain, source, status, first_seen_at, last_seen_at
+                  url, domain, source, status, risk_score, admission,
+                  risk_reason, first_seen_at, last_seen_at
                 )
-                VALUES (?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?)
                 """,
-                (url, domain, source, status, now, now),
+                (
+                    url,
+                    domain,
+                    source,
+                    status,
+                    risk_score,
+                    admission,
+                    risk_reason,
+                    now,
+                    now,
+                ),
             )
             return True
 
@@ -604,11 +943,21 @@ class SQLiteStorage(Storage):
         with self._conn() as c:
             if eligible_only:
                 rows = c.execute(
-                    "SELECT * FROM discovered_sites "
-                    "WHERE status='pending' "
-                    "OR (status='failed' AND "
-                    "(next_attempt_at IS NULL OR next_attempt_at<=?)) "
-                    "ORDER BY id ASC LIMIT ?",
+                    """
+                    SELECT ds.*
+                    FROM discovered_sites ds
+                    LEFT JOIN discovery_domains dd ON dd.domain = ds.domain
+                    WHERE (
+                        ds.status='pending'
+                        OR (
+                            ds.status='failed'
+                            AND (ds.next_attempt_at IS NULL OR ds.next_attempt_at<=?)
+                        )
+                    )
+                    AND COALESCE(dd.admission, ds.admission, 'auto')='auto'
+                    ORDER BY ds.id ASC
+                    LIMIT ?
+                    """,
                     (now, limit),
                 ).fetchall()
             elif status is None:
@@ -652,6 +1001,78 @@ class SQLiteStorage(Storage):
                     row["source"]: row["count"] for row in source_rows
                 },
             }
+
+    def set_discovery_domain_admission(
+        self,
+        domain: str,
+        admission: str,
+    ) -> int:
+        if admission not in ("auto", "quarantine", "blocked"):
+            raise ValueError("invalid discovery domain admission")
+
+        domain = domain.strip().lower().rstrip(".")
+        if not domain:
+            raise ValueError("invalid discovery domain")
+
+        now = now_iso()
+
+        with self._conn(write=True) as c:
+            row = c.execute(
+                "SELECT risk_score, risk_reason FROM discovery_domains WHERE domain=?",
+                (domain,),
+            ).fetchone()
+
+            risk_score = float(row["risk_score"] or 0) if row else 0.0
+            risk_reason = row["risk_reason"] if row else "admin_override"
+
+            c.execute(
+                """
+                INSERT INTO discovery_domains (
+                  domain, admission, risk_score, risk_reason,
+                  first_seen_at, updated_at
+                )
+                VALUES (?,?,?,?,?,?)
+                ON CONFLICT(domain) DO UPDATE SET
+                  admission=excluded.admission,
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    domain,
+                    admission,
+                    risk_score,
+                    risk_reason,
+                    now,
+                    now,
+                ),
+            )
+
+            cur = c.execute(
+                """
+                UPDATE discovered_sites
+                SET admission=?,
+                    approved_at=CASE
+                      WHEN ?='auto' THEN ?
+                      ELSE approved_at
+                    END,
+                    blocked_at=CASE
+                      WHEN ?='blocked' THEN ?
+                      ELSE blocked_at
+                    END,
+                    last_seen_at=?
+                WHERE domain=?
+                """,
+                (
+                    admission,
+                    admission,
+                    now,
+                    admission,
+                    now,
+                    now,
+                    domain,
+                ),
+            )
+            return int(cur.rowcount)
+
 
     def list_discovered_sites_admin(
         self,
@@ -795,6 +1216,22 @@ class SQLiteStorage(Storage):
                 )
             return cur.rowcount > 0
 
+    def requeue_due_urls(self) -> int:
+        """Requeue completed URLs whose freshness interval has expired."""
+        now = now_iso()
+        with self._conn(write=True) as c:
+            cur = c.execute(
+                """
+                UPDATE urls
+                SET status='pending'
+                WHERE status IN ('done', 'duplicate', 'noindex')
+                  AND next_crawl_at IS NOT NULL
+                  AND next_crawl_at<=?
+                """,
+                (now,),
+            )
+            return int(cur.rowcount)
+
     def claim_next(self, exclude_domains: Sequence[str] = ()) -> Optional[QueueItem]:
         ex = list(exclude_domains)
         sql = (
@@ -813,6 +1250,14 @@ class SQLiteStorage(Storage):
             c.execute("UPDATE urls SET status='in_progress', attempts=attempts+1, last_attempt_at=? WHERE id=?",
                       (now_iso(), r["id"]))
             return QueueItem(r["id"], r["url"], r["domain"], r["depth"], r["attempts"] + 1)
+
+    def get_url_attempts(self, url: str) -> int:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT attempts FROM urls WHERE url=?",
+                (url,),
+            ).fetchone()
+        return int(row["attempts"] or 1) if row else 1
 
     def mark_url(
         self,
@@ -899,10 +1344,23 @@ class SQLiteStorage(Storage):
 
     # ------------------------------------------------------------------ search metrics
     def log_query(self, query: str, result_count: int, latency_ms: float) -> None:
+        # Store only a one-way fingerprint; raw user queries are privacy-sensitive.
+        query_hash = hashlib.sha256(
+            (query or "").strip().casefold().encode("utf-8")
+        ).hexdigest()
         with self._conn(write=True) as c:
-            c.execute("INSERT INTO query_log (at, query, result_count, latency_ms) VALUES (?,?,?,?)",
-                      (now_iso(), query[:200], int(result_count), float(latency_ms)))
-            c.execute("DELETE FROM query_log WHERE id <= (SELECT max(id) FROM query_log) - ?", (QUERY_LOG_KEEP,))
+            c.execute(
+                "INSERT INTO query_log (at, query, result_count, latency_ms) VALUES (?,?,?,?)",
+                (now_iso(), query_hash, int(result_count), float(latency_ms)),
+            )
+
+    def purge_old_query_logs(self, retention_days: int = 30) -> int:
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=max(1, int(retention_days)))
+        ).isoformat(timespec="seconds")
+        with self._conn(write=True) as c:
+            cur = c.execute("DELETE FROM query_log WHERE at < ?", (cutoff,))
+            return int(cur.rowcount)
 
     def search_stats(self) -> dict:
         with self._conn() as c:

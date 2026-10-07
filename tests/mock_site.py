@@ -5,8 +5,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 class MockSite:
     """routes: path -> (status, content_type, body_bytes_or_str, extra_headers)"""
-    def __init__(self, routes):
+    def __init__(self, routes, hostname="127.0.0.1"):
         self.routes, self.hits, self.hosts = routes, [], []
+        self.hostname = hostname
         site = self
 
         class H(BaseHTTPRequestHandler):
@@ -27,7 +28,7 @@ class MockSite:
                 self.wfile.write(data)
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
-        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.base = f"http://{self.hostname}:{self.server.server_address[1]}"
 
     def __enter__(self):
         threading.Thread(target=self.server.serve_forever, daemon=True).start()

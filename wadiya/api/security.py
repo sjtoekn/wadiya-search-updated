@@ -1,7 +1,7 @@
 """Framework-independent HTTP security constants/helpers. api/app.py applies them; tests check them directly."""
 from __future__ import annotations
 
-CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
+CSP = ("default-src 'self'; img-src 'self' data: https:; style-src 'self'; script-src 'self'; "
        "base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 
 SECURITY_HEADERS = {

@@ -1,4 +1,5 @@
 import os
+import socket
 
 from tests.mock_site import MockSite
 from wadiya.config.settings import Settings
@@ -38,7 +39,19 @@ class Env:
                     retry_backoff=0.0, max_retries=0, request_timeout=3.0)
         base.update(overrides)
         self.settings = Settings(**{**tmp_settings.__dict__, **base})
-        self.fetcher = Fetcher(self.settings, sleep=lambda s: None)
+
+        def resolver(host, port, **kwargs):
+            if host.endswith(".test"):
+                return [
+                    (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))
+                ]
+            return socket.getaddrinfo(host, port, **kwargs)
+
+        self.fetcher = Fetcher(
+            self.settings,
+            resolver=resolver,
+            sleep=lambda s: None,
+        )
         self.robots = RobotsChecker(self.fetcher, self.settings.robots_token)
         self.site = site
 

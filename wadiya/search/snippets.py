@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import re
 
+from ..unicode_text import token_spans
+
 _MAX_MATCHES = 400
 
 
@@ -13,22 +15,26 @@ def _stem(term: str) -> str:
 def make_snippet(text: str, terms, max_len: int = 220, fallback: str = "") -> str:
     text = " ".join((text or "").split())
     fallback = " ".join((fallback or "").split())
-    pats = [re.compile(r"\b" + re.escape(_stem(t)), re.I) for t in terms if t]
+    stems = [_stem(t).casefold() for t in terms if t]
     positions = []
-    for i, p in enumerate(pats):
-        for m in p.finditer(text):
-            positions.append((m.start(), i))
-            if len(positions) >= _MAX_MATCHES:
-                break
+    for start, end, token in token_spans(text):
+        folded = token.casefold()
+        for i, stem in enumerate(stems):
+            if folded.startswith(stem):
+                positions.append((start, i))
+                if len(positions) >= _MAX_MATCHES:
+                    break
+        if len(positions) >= _MAX_MATCHES:
+            break
     if not positions:
         return _clip(fallback or text, max_len)
     positions.sort()
 
     best_start, best_score = 0, -1
-    wanted = set(range(len(pats)))
+    wanted = set(range(len(stems)))
 
     # Prefer the smallest window containing every query term.
-    wanted = set(range(len(pats)))
+    wanted = set(range(len(stems)))
     recent = positions[:200]
 
     left = 0

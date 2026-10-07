@@ -2,11 +2,67 @@
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
   var form = $('searchForm'), input = $('q'), statusEl = $('status'), resultsEl = $('results'),
-      pagerEl = $('pager'), flow = $('flow'), controller = null;
+      pagerEl = $('pager'), flow = $('flow'), searchModes = $('searchModes'), controller = null;
+
+  function setSearchModes(visible) {
+    if (!searchModes) return;
+    searchModes.hidden = !visible;
+  }
+
+  function setActiveSearchMode(mode) {
+    if (!searchModes) return;
+
+    searchModes.querySelectorAll('.search-mode').forEach(function (link) {
+      var active = link.getAttribute('data-search-mode') === mode;
+      link.classList.toggle('is-active', active);
+      link.setAttribute('aria-current', active ? 'page' : 'false');
+    });
+  }
+
+  if (searchModes) {
+    searchModes.addEventListener('click', function (e) {
+      var link = e.target.closest('.search-mode');
+      if (!link) return;
+
+      e.preventDefault();
+
+      var mode = link.getAttribute('data-search-mode') || 'web';
+      var q = (input && input.value || '').trim();
+
+      setActiveSearchMode(mode);
+
+      if (mode === 'web') {
+        if (q) {
+          history.replaceState(
+            { q: q, page: 1, mode: 'web' },
+            '',
+            urlFor(q, 1, 'web')
+          );
+          search(q, 1, false);
+        }
+        return;
+      }
+
+      var target = '/search?q=' + encodeURIComponent(q) + '&type=' + encodeURIComponent(mode);
+      history.pushState(
+        { q: q, page: 1, mode: mode },
+        '',
+        target
+      );
+
+      if (q) {
+        search(q, 1, false, mode);
+      } else {
+        setStatus('', false);
+        resultsEl.textContent = '';
+        pagerEl.textContent = '';
+      }
+    });
+  }
 
   // ---- pure helpers (kept free of DOM so they are easy to reason about) ----
   function queryTerms(q) {
-    var m = (q || '').toLowerCase().match(/[\p{L}\p{N}]+/gu) || [], seen = {}, out = [];
+    var m = (q || '').toLowerCase().match(/[\p{L}\p{M}\p{N}\u200D]+/gu) || [], seen = {}, out = [];
     m.forEach(function (t) { if (!seen[t]) { seen[t] = 1; out.push(t); } });
     return out;
   }
@@ -14,7 +70,7 @@
   function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
   function splitForHighlight(text, terms) {            // -> [{text, hit}]
     if (!terms.length) return [{ text: text, hit: false }];
-    var re = new RegExp('(^|[^\\p{L}\\p{N}])(' + terms.map(function (t) { return escapeRe(stem(t)); }).join('|') + ')([\\p{L}\\p{N}]*)', 'giu');
+    var re = new RegExp('(^|[^\\p{L}\\p{M}\\p{N}\\u200D])(' + terms.map(function (t) { return escapeRe(stem(t)); }).join('|') + ')([\\p{L}\\p{M}\\p{N}\\u200D]*)', 'giu');
     var parts = [], last = 0, m;
     while ((m = re.exec(text)) !== null) {
       var start = m.index + m[1].length, end = start + m[2].length + m[3].length;
@@ -36,9 +92,67 @@
       return parts.length ? ' › ' + parts.slice(0, 3).join(' › ') : '';
     } catch (e) { return ' · ' + u; }
   }
-  function urlFor(q, page) { return '/search?q=' + encodeURIComponent(q) + (page > 1 ? '&page=' + page : ''); }
+  function urlFor(q, page, mode) {
+    var url = '/search?q=' + encodeURIComponent(q);
+    if (mode && mode !== 'web') url += '&type=' + encodeURIComponent(mode);
+    if (page > 1) url += '&page=' + page;
+    return url;
+  }
 
   // ---- rendering (textContent only: crawled content is never interpreted as HTML) ----
+  function renderImageResult(r) {
+    var card = el('article', 'image-card');
+    var imageHref = safeHttpUrl(r.image_url);
+    var sourceHref = safeHttpUrl(r.source_page_url);
+
+    if (imageHref) {
+      var imageLink = el('a', 'image-card-media');
+      imageLink.href = imageHref;
+      imageLink.target = '_blank';
+      imageLink.rel = 'noopener noreferrer nofollow';
+
+      var img = document.createElement('img');
+      img.src = imageHref;
+      img.alt = r.alt_text || r.title || 'Image result';
+      img.loading = 'lazy';
+      img.decoding = 'async';
+
+      img.addEventListener('error', function () {
+        imageLink.classList.add('image-load-error');
+        img.removeAttribute('src');
+        img.alt = '';
+        imageLink.appendChild(el('span', 'image-fallback', 'Image unavailable'));
+      }, { once: true });
+
+      imageLink.appendChild(img);
+      card.appendChild(imageLink);
+    }
+
+    var body = el('div', 'image-card-body');
+    var title = r.title || r.source_page_url || 'Image result';
+
+    if (sourceHref) {
+      var source = el('a', 'image-card-title', title);
+      source.href = sourceHref;
+      source.target = '_blank';
+      source.rel = 'noopener noreferrer nofollow';
+      body.appendChild(source);
+    } else {
+      body.appendChild(el('div', 'image-card-title', title));
+    }
+
+    if (r.source_domain) {
+      body.appendChild(el('div', 'image-card-domain', r.source_domain));
+    } else if (sourceHref) {
+      try {
+        body.appendChild(el('div', 'image-card-domain', new URL(sourceHref).hostname));
+      } catch (e) {}
+    }
+
+    card.appendChild(body);
+    return card;
+  }
+
   function renderResult(r, terms) {
     var li = el('article', 'result'), site = el('div', 'site');
     site.appendChild(el('i', 'fav'));
@@ -63,26 +177,40 @@
     li.appendChild(discover);
     return li;
   }
-  function renderPager(d) {
+  function renderPager(d, mode) {
     pagerEl.textContent = '';
     if (d.total_pages <= 1) return;
     var prev = d.page > 1 ? el('a', null, '← Previous') : el('span', 'off', '← Previous');
     var next = d.page < d.total_pages ? el('a', null, 'Next →') : el('span', 'off', 'Next →');
-    if (d.page > 1) { prev.href = urlFor(d.query, d.page - 1); prev.dataset.page = d.page - 1; }
-    if (d.page < d.total_pages) { next.href = urlFor(d.query, d.page + 1); next.dataset.page = d.page + 1; }
-    pagerEl.appendChild(prev); pagerEl.appendChild(el('span', null, 'Page ' + d.page + ' of ' + d.total_pages)); pagerEl.appendChild(next);
+    if (d.page > 1) {
+      prev.href = urlFor(d.query, d.page - 1, mode);
+      prev.dataset.page = d.page - 1;
+    }
+    if (d.page < d.total_pages) {
+      next.href = urlFor(d.query, d.page + 1, mode);
+      next.dataset.page = d.page + 1;
+    }
+    pagerEl.appendChild(prev);
+    pagerEl.appendChild(el('span', null, 'Page ' + d.page + ' of ' + d.total_pages));
+    pagerEl.appendChild(next);
   }
 
-  function search(q, page, push) {
-    q = (q || '').trim(); page = page || 1;
+  function search(q, page, push, mode) {
+    q = (q || '').trim(); page = page || 1; mode = mode || 'web';
     if (!q) return;
     document.body.classList.remove('home'); input.value = q; document.title = q + ' – Wadiya.com';
-    if (push) history.pushState({ q: q, page: page }, '', urlFor(q, page));
+    setActiveSearchMode(mode);
+    if (push) history.pushState({ q: q, page: page, mode: mode }, '', urlFor(q, page, mode));
     if (controller) controller.abort();
     controller = new AbortController();
-    resultsEl.textContent = ''; pagerEl.textContent = ''; setStatus('Searching…', false); setBusy(true);
+    resultsEl.textContent = '';
+    resultsEl.classList.toggle('image-results', mode === 'images');
+    pagerEl.textContent = '';
+    setStatus('Searching…', false);
+    setBusy(true);
+    setSearchModes(true);
 
-    fetch('/api/search?q=' + encodeURIComponent(q) + '&page=' + page, { signal: controller.signal, headers: { Accept: 'application/json' } })
+    fetch('/api/search?q=' + encodeURIComponent(q) + '&page=' + page + '&type=' + encodeURIComponent(mode), { signal: controller.signal, headers: { Accept: 'application/json' } })
       .then(function (r) { return r.json().catch(function () { return {}; }).then(function (b) { return { ok: r.ok, body: b }; }); })
       .then(function (res) {
         setBusy(false);
@@ -90,15 +218,27 @@
         var d = res.body, terms = queryTerms(d.query);
         if (!d.results.length) {
           setStatus('', false);
-          var box = el('li', 'empty'); box.appendChild(el('h2', null, d.result_count ? 'No more results' : 'No results for “' + d.query + '”'));
+          var box = el('div', 'empty');
+          box.appendChild(el('h2', null, d.result_count ? 'No more results' : 'No results for “' + d.query + '”'));
           box.appendChild(el('p', null, d.result_count ? 'Go back to the previous page.' : 'Try different or fewer words. Wadiya only searches the pages it has crawled so far.'));
-          resultsEl.appendChild(box); renderPager(d); return;
+          resultsEl.appendChild(box);
+          renderPager(d, mode);
+          return;
         }
+
         var count = 'About ' + d.result_count.toLocaleString() + (d.result_count_exact ? '' : '+') + ' result' + (d.result_count === 1 ? '' : 's') +
-          ' (' + (d.latency_ms / 1000).toFixed(3) + ' seconds)' + (d.match === 'any' ? ' · matching any of your words' : '');
+          ' (' + (d.latency_ms / 1000).toFixed(3) + ' seconds)';
         setStatus(count, false);
-        d.results.forEach(function (r) { resultsEl.appendChild(renderResult(r, terms)); });
-        renderPager(d);
+
+        if (mode === 'images') {
+          resultsEl.classList.add('image-results');
+          d.results.forEach(function (r) { resultsEl.appendChild(renderImageResult(r)); });
+        } else {
+          resultsEl.classList.remove('image-results');
+          d.results.forEach(function (r) { resultsEl.appendChild(renderResult(r, terms)); });
+        }
+
+        renderPager(d, mode);
         if (!push) return; window.scrollTo(0, 0);
       })
       .catch(function (e) {
@@ -115,14 +255,42 @@
   });
   $('markLink').addEventListener('click', function (e) {
     e.preventDefault(); if (controller) controller.abort(); setBusy(false); history.pushState({}, '', '/');
-    document.body.classList.add('home'); input.value = ''; setStatus(''); resultsEl.textContent = ''; pagerEl.textContent = ''; document.title = 'Wadiya.com'; input.focus();
+    document.body.classList.add('home'); input.value = ''; setStatus(''); resultsEl.textContent = ''; resultsEl.classList.remove('image-results'); pagerEl.textContent = ''; setSearchModes(false); document.title = 'Wadiya.com'; input.focus();
   });
   window.addEventListener('popstate', function () { boot(false); });
 
   function boot(push) {
-    var p = new URLSearchParams(location.search), q = p.get('q'), page = parseInt(p.get('page') || '1', 10);
-    if (q && q.trim()) search(q, page > 0 ? page : 1, false);
-    else { document.body.classList.add('home'); input.value = ''; setStatus(''); resultsEl.textContent = ''; pagerEl.textContent = ''; }
+    var p = new URLSearchParams(location.search),
+        q = p.get('q'),
+        page = parseInt(p.get('page') || '1', 10),
+        mode = p.get('type') || 'web';
+
+    if (q && q.trim()) {
+      if (mode === 'web') {
+        search(q, page > 0 ? page : 1, false, 'web');
+      } else {
+        document.body.classList.remove('home');
+        input.value = q.trim();
+        document.title = q.trim() + ' – Wadiya.com';
+        setSearchModes(true);
+        setActiveSearchMode(mode);
+        if (mode === 'images') {
+          search(q.trim(), page > 0 ? page : 1, false, 'images');
+        } else {
+          setStatus(mode.charAt(0).toUpperCase() + mode.slice(1) + ' search is coming next.', false);
+          resultsEl.textContent = '';
+          pagerEl.textContent = '';
+        }
+      }
+    } else {
+      document.body.classList.add('home');
+      input.value = '';
+      setStatus('');
+      resultsEl.textContent = '';
+      pagerEl.textContent = '';
+      setSearchModes(false);
+      setActiveSearchMode('web');
+    }
   }
   boot();
 })();

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+import threading
 
 from typing import Optional
 
@@ -50,25 +51,38 @@ class SubmitLimiter:
         self.window = window
         self._clock = clock
         self._hits = {}
+        self._lock = threading.Lock()
+
+    def _recent_locked(self, key, now):
+        recent = [t for t in self._hits.get(key, []) if now - t < self.window]
+        if recent:
+            self._hits[key] = recent
+        else:
+            self._hits.pop(key, None)
+        return recent
 
     def _recent(self, key):
-        now = self._clock()
-        self._hits[key] = [
-            t for t in self._hits.get(key, [])
-            if now - t < self.window
-        ]
-        return self._hits[key]
+        with self._lock:
+            return self._recent_locked(key, self._clock())
 
     def allowed(self, key) -> bool:
-        return len(self._recent(key)) < self.limit
+        with self._lock:
+            return len(self._recent_locked(key, self._clock())) < self.limit
 
     def hit(self, key) -> None:
-        self._recent(key).append(self._clock())
+        with self._lock:
+            now = self._clock()
+            self._recent_locked(key, now)
+            self._hits.setdefault(key, []).append(now)
+            if len(self._hits) > 10000:
+                cutoff = now - self.window
+                for k in list(self._hits):
+                    self._recent_locked(k, cutoff)
 
     def retry_after(self, key) -> int:
-        recent = self._recent(key)
-        if not recent:
-            return 0
-
-        remaining = self.window - (self._clock() - recent[0])
-        return max(1, int(remaining + 0.999))
+        with self._lock:
+            recent = self._recent_locked(key, self._clock())
+            if not recent:
+                return 0
+            remaining = self.window - (self._clock() - recent[0])
+            return max(1, int(remaining + 0.999))

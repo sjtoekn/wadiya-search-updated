@@ -56,6 +56,14 @@ class ContinuousCrawler:
 
             cycle_seeds = seeds if cycle == 1 else []
 
+            requeued = self.storage.requeue_due_urls()
+            if requeued:
+                print(
+                    "requeued due URLs:",
+                    requeued,
+                    flush=True,
+                )
+
             stats = Crawler(
                 self.settings,
                 self.storage,

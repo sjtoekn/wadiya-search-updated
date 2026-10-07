@@ -207,6 +207,8 @@ class Crawler:
         try:
             self._process(item, scope, stats, run_id)
         except Exception as e:
+            if getattr(self.s, "_debug_test_exceptions", False):
+                raise
             stats.failed += 1
             self._finish(
                 run_id,
@@ -391,12 +393,7 @@ class Crawler:
 
         if queue_status in ("failed", "robots_blocked", "skipped"):
             try:
-                with self.storage._conn() as c:
-                    row = c.execute(
-                        "SELECT attempts FROM urls WHERE url=?",
-                        (url,),
-                    ).fetchone()
-                attempts = int(row["attempts"] or 1) if row else 1
+                attempts = self.storage.get_url_attempts(url)
             except Exception:
                 attempts = 1
 
@@ -553,7 +550,8 @@ class Crawler:
         doc = Document(id=None, url=final, canonical_url=canonical, domain=final_site, title=page.title,
                        description=page.description, content=content, language=page.language, status="ok",
                        content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
-                       crawled_at=now, updated_at=now, headings="\n".join(page.headings))
+                       crawled_at=now, updated_at=now, headings="\n".join(page.headings),
+                       nosnippet=bool(page.nosnippet), images=list(page.images))
         saved = self.storage.save_document(doc)
         if saved.outcome == "duplicate":
             stats.duplicates += 1

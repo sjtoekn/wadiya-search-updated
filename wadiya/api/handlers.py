@@ -25,9 +25,18 @@ def parse_page(raw) -> int:
     return int(raw)
 
 
-def handle_search(service, q, page_raw) -> tuple:
+def handle_search(service, q, page_raw, search_type="web") -> tuple:
     try:
-        return 200, service.search(q, parse_page(page_raw))
+        page = parse_page(page_raw)
+        search_type = (search_type or "web").strip().lower()
+
+        if search_type == "web":
+            return 200, service.search(q, page)
+
+        if search_type == "images":
+            return 200, service.search_images(q, page)
+
+        return error(400, "unsupported search type")
     except InvalidSearchRequest as e:
         return error(400, str(e))
 
@@ -39,6 +48,39 @@ def handle_login(auth, password, client_key: str) -> tuple:
 
 def handle_stats(storage, indexer) -> tuple:
     return 200, build_stats(storage, indexer)
+
+
+def handle_admin_discovery_domain_action(
+    storage,
+    *,
+    domain: str,
+    admission: str,
+) -> tuple:
+    domain = (domain or "").strip().lower().rstrip(".")
+
+    if not domain or len(domain) > 253 or any(
+        ch.isspace() for ch in domain
+    ):
+        return error(400, "invalid domain")
+
+    admission = (admission or "").strip().lower()
+    if admission not in {"auto", "quarantine", "blocked"}:
+        return error(400, "invalid admission")
+
+    try:
+        updated = storage.set_discovery_domain_admission(
+            domain,
+            admission,
+        )
+    except ValueError as exc:
+        return error(400, str(exc))
+
+    return 200, {
+        "ok": True,
+        "domain": domain,
+        "admission": admission,
+        "updated_sites": updated,
+    }
 
 
 def handle_admin_discovery(
@@ -292,8 +334,8 @@ def handle_page(storage, url: str) -> tuple:
         "title": page.title,
         "description": page.description,
         "headings": page.headings,
-        "content": page.content,
         "language": page.language,
+        "nosnippet": page.nosnippet,
         "crawled_at": page.crawled_at,
         "updated_at": page.updated_at,
     }

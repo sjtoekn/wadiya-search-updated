@@ -28,8 +28,10 @@ class ExtractedPage:
     language: Optional[str] = None
     links: list = field(default_factory=list)
     feed_links: list = field(default_factory=list)
+    images: list = field(default_factory=list)
     noindex: bool = False
     nofollow: bool = False
+    nosnippet: bool = False
 
 
 def _decode(data: bytes, content_type: Optional[str]) -> str:
@@ -83,6 +85,7 @@ def extract(content: Union[bytes, str], base_url: str, content_type: Optional[st
             low = val.lower()
             page.noindex |= "noindex" in low or "none" in low
             page.nofollow |= "nofollow" in low or "none" in low
+            page.nosnippet |= "nosnippet" in low
         elif (m.get("http-equiv") or "").lower() == "content-language" and not page.language:
             page.language = _lang(val)
     if soup.html and soup.html.get("lang"):
@@ -119,6 +122,53 @@ def extract(content: Union[bytes, str], base_url: str, content_type: Optional[st
             page.links.append(u)
     if page.nofollow:
         page.links = []
+
+    # --- image candidates ---
+    seen_images = set()
+
+    def add_image(image_url, alt_text="", title=""):
+        if not image_url:
+            return
+
+        image_url = normalize_url(image_url, base=base)
+        if not image_url:
+            return
+
+        if image_url in seen_images:
+            return
+
+        seen_images.add(image_url)
+        page.images.append({
+            "image_url": image_url,
+            "source_page_url": base_url,
+            "source_domain": "",
+            "alt_text": _clean(alt_text, 300),
+            "title": _clean(title, 300),
+        })
+
+    for img in soup.find_all("img"):
+        image_url = img.get("src")
+
+        if not image_url:
+            srcset = img.get("srcset") or ""
+            if srcset:
+                image_url = srcset.split(",", 1)[0].strip().split(" ", 1)[0]
+
+        add_image(
+            image_url,
+            alt_text=img.get("alt"),
+            title=img.get("title"),
+        )
+
+    for m in soup.find_all("meta"):
+        prop = (
+            m.get("property")
+            or m.get("name")
+            or ""
+        ).strip().lower()
+
+        if prop in ("og:image", "og:image:url", "twitter:image"):
+            add_image(m.get("content"))
 
     h1 = soup.find("h1")
     if not page.title and h1:

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-import re
-from typing import Sequence
+from datetime import datetime, timezone
+from math import exp
+from typing import Mapping, Sequence
+
+from ..unicode_text import tokenize
 
 from .base import Ranker
 
@@ -14,18 +17,34 @@ class BM25Ranker(Ranker):
     """
     field_weights = {"title": 5.0, "headings": 3.0, "description": 2.0, "body": 1.0}
 
-    _TOKEN = re.compile(r"[\w]+", re.UNICODE)
-
     @classmethod
     def _title_terms(cls, title: str) -> tuple[str, ...]:
         return tuple(
             t.casefold()
-            for t in cls._TOKEN.findall(title or "")
+            for t in tokenize(title or "")
             if t
         )
 
     @classmethod
-    def _boost(cls, query, hit) -> float:
+    def _freshness_boost(cls, updated_at: str | None) -> float:
+        if not updated_at:
+            return 0.0
+        try:
+            value = updated_at.replace("Z", "+00:00")
+            updated = datetime.fromisoformat(value)
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            age_days = max(
+                0.0,
+                (datetime.now(timezone.utc) - updated.astimezone(timezone.utc)).total_seconds()
+                / 86400.0,
+            )
+            return exp(-age_days / 30.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _boost(cls, query, hit, document=None) -> float:
         title = (hit.title or "").casefold().strip()
         if not title:
             return 0.0
@@ -60,10 +79,25 @@ class BM25Ranker(Ranker):
             if phrase_text and phrase_text in title:
                 boost += 5.0
 
+        if document is not None:
+            # Small freshness signal: exact relevance remains dominant.
+            boost += 0.75 * cls._freshness_boost(
+                getattr(document, "updated_at", None)
+            )
+
         return boost
 
-    def rank(self, query, hits: Sequence) -> list:
+    def rank(
+        self,
+        query,
+        hits: Sequence,
+        documents: Mapping[int, object] | None = None,
+    ) -> list:
+        documents = documents or {}
         return sorted(
             hits,
-            key=lambda h: (-h.score - self._boost(query, h), h.doc_id),
+            key=lambda h: (
+                -h.score - self._boost(query, h, documents.get(h.doc_id)),
+                h.doc_id,
+            ),
         )

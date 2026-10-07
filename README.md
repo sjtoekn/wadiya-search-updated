@@ -167,5 +167,6 @@ application.
 
 Each layer is behind an interface: implement `Storage` (`wadiya/storage/base.py`) for another database,
 `Indexer` (`wadiya/indexer/base.py`) for another engine, `Ranker` (`wadiya/ranking/base.py`) for other ordering, then
-pass them to `create_app(settings, storage, indexer, ranker)` and the crawler. The API, UI, crawler and ranker never
-import SQLite or FTS5 directly.
+pass them to `create_app(settings, storage, indexer, ranker)` and the crawler. The Storage contract covers documents,
+URL queue, freshness, discovery registry and user operations; the crawler uses only that interface and never accesses
+SQLite connections directly. The API, UI, crawler and ranker never import SQLite or FTS5 directly.

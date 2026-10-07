@@ -2,6 +2,7 @@ import sqlite3
 from pathlib import Path
 
 from tests.helpers import TempDirCase, make_doc
+from wadiya.storage.base import Document
 from wadiya.storage.sqlite_store import SCHEMA_VERSION, SQLiteStorage
 
 
@@ -360,7 +361,61 @@ class StorageTests(TempDirCase):
         s.log_query("hello", 3, 10.0); s.log_query("world", 0, 20.0)
         st = s.search_stats()
         self.assertEqual((st["search_count"], st["avg_latency_ms"]), (2, 15.0))
-        self.assertEqual(s.recent_queries()[0]["query"], "world")
+        import hashlib
+        expected_hash = hashlib.sha256(
+            "world".casefold().encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(s.recent_queries()[0]["query"], expected_hash)
+
+    def test_search_images_uses_word_boundary_matching(self):
+        s = self.storage
+
+        luma = make_doc(
+            url="https://luma.com/",
+            title="Luma",
+            description="Discover and host memorable events",
+            domain="luma.com",
+        )
+        luma.images = [
+            {
+                "image_url": "https://images.lumacdn.com/luma.png",
+                "source_page_url": "https://luma.com/",
+                "source_domain": "luma.com",
+                "alt_text": "",
+                "title": "Luma",
+            }
+        ]
+
+        nalumango = make_doc(
+            url="https://tum.wikipedia.org/wiki/Jani_likulu",
+            title="Wikipedia",
+            domain="tum.wikipedia.org",
+        )
+        nalumango.images = [
+            {
+                "image_url": "https://example.org/nalumango.jpg",
+                "source_page_url": "https://tum.wikipedia.org/wiki/Jani_likulu",
+                "source_domain": "tum.wikipedia.org",
+                "alt_text": "Mutale Nalumango",
+                "title": "Wikipedia",
+            }
+        ]
+
+        s.save_document(luma)
+        s.save_document(nalumango)
+
+        rows = s.search_images("luma", limit=50)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            rows[0]["image_url"],
+            "https://images.lumacdn.com/luma.png",
+        )
+        self.assertEqual(
+            rows[0]["source_page_url"],
+            "https://luma.com/",
+        )
+
 
 class DiscoveryRegistryTests(TempDirCase):
     def test_register_discovered_site_deduplicates(self):

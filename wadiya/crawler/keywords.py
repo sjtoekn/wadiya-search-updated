@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import re
 from collections import Counter
 from typing import Iterable
 
-_TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
+from ..unicode_text import tokenize
 
 _STOPWORDS = frozenset(
     """
@@ -32,7 +31,7 @@ _MAX_REPETITION_CREDIT = 4
 def _tokens(text: str) -> list[str]:
     return [
         token.casefold()
-        for token in _TOKEN.findall(text or "")
+        for token in tokenize(text or "")
         if _MIN_TOKEN_LEN <= len(token) <= _MAX_TOKEN_LEN
         and token.casefold() not in _STOPWORDS
     ]

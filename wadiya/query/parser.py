@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import re
 import unicodedata
+
+from ..unicode_text import tokenize
 from dataclasses import dataclass
 
-_TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
 _PHRASE = re.compile(r'"([^"]*)"')
 _CTRL = re.compile(r"[\x00-\x1f\x7f]")
 _OPERATOR = re.compile(r"(?<!\S)(-?)(site|intitle|filetype):([^\s]+)", re.I)
@@ -47,7 +48,7 @@ def normalize(raw: str) -> str:
 
 
 def _tokens(text: str) -> list:
-    return [t for t in _TOKEN.findall(text) if len(t) <= MAX_TOKEN_LEN]
+    return [t for t in tokenize(text) if len(t) <= MAX_TOKEN_LEN]
 
 
 def parse_query(raw, max_length: int = 200, max_terms: int = 32) -> ParsedQuery:

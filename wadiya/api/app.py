@@ -49,6 +49,7 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
     submit_limiter = SubmitLimiter()
     preview_limiter = SubmitLimiter(limit=5, window=600)
     user_auth_limiter = SubmitLimiter(limit=10, window=600)
+    page_limiter = SubmitLimiter(limit=60, window=60)
     preview_fetcher = fetcher or Fetcher(settings)
 
     app = FastAPI(title="Wadiya", docs_url=None, redoc_url=None, openapi_url=None)
@@ -118,8 +119,8 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
 
     # ------------------------------------------------------------------ public API
     @app.get("/api/search")
-    def search(q: str = "", page: str = "1"):
-        status, body = handlers.handle_search(service, q, page)
+    def search(q: str = "", page: str = "1", type: str = "web"):
+        status, body = handlers.handle_search(service, q, page, type)
         return JSONResponse(body, status_code=status)
 
     @app.get("/api/discovery")
@@ -217,7 +218,17 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
         return JSONResponse(body, status_code=status)
 
     @app.get("/api/page")
-    def page(url: str = ""):
+    def page(request: Request, url: str = ""):
+        client_key = request.client.host if request.client else "unknown"
+        if not page_limiter.allowed(client_key):
+            retry_after = page_limiter.retry_after(client_key)
+            response = JSONResponse(
+                {"error": "too many page requests; try again later"},
+                status_code=429,
+            )
+            response.headers["Retry-After"] = str(retry_after)
+            return response
+        page_limiter.hit(client_key)
         status, body = handlers.handle_page(storage, url)
         return JSONResponse(body, status_code=status)
 
@@ -316,7 +327,7 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
         if not settings.google_client_id or not settings.google_client_secret or not settings.google_redirect_uri:
             raise HTTPException(status_code=503, detail="Google authentication is not configured")
         state = create_google_state(settings.secret_key)
-        return RedirectResponse(
+        response = RedirectResponse(
             build_google_authorization_url(
                 settings.google_client_id,
                 settings.google_redirect_uri,
@@ -324,15 +335,40 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
             ),
             status_code=302,
         )
+        response.set_cookie(
+            "wadiya_google_oauth_nonce",
+            state,
+            max_age=600,
+            httponly=True,
+            secure=settings.cookie_secure,
+            samesite="strict",
+            path="/api/auth/google",
+        )
+        return response
 
     @app.get("/api/auth/google/callback")
-    def google_callback(code: str = "", state: str = "", error: str = ""):
+    def google_callback(
+        request: Request,
+        code: str = "",
+        state: str = "",
+        error: str = "",
+    ):
+        oauth_nonce = request.cookies.get("wadiya_google_oauth_nonce")
         if error:
-            return RedirectResponse("/login?error=google_denied", status_code=302)
+            resp = RedirectResponse("/login?error=google_denied", status_code=302)
+            resp.delete_cookie("wadiya_google_oauth_nonce", path="/api/auth/google")
+            return resp
         if not settings.google_client_id or not settings.google_client_secret or not settings.google_redirect_uri:
             raise HTTPException(status_code=503, detail="Google authentication is not configured")
-        if not code or not verify_google_state(settings.secret_key, state):
-            return RedirectResponse("/login?error=google_state", status_code=302)
+        if (
+            not code
+            or not oauth_nonce
+            or not verify_google_state(settings.secret_key, state)
+            or state != oauth_nonce
+        ):
+            resp = RedirectResponse("/login?error=google_state", status_code=302)
+            resp.delete_cookie("wadiya_google_oauth_nonce", path="/api/auth/google")
+            return resp
 
         try:
             tokens = google_exchange_code(
@@ -363,6 +399,7 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
 
             resp = RedirectResponse("/profile", status_code=302)
             resp.set_cookie("wadiya_user", token, **session_cookie_kwargs(settings))
+            resp.delete_cookie("wadiya_google_oauth_nonce", path="/api/auth/google")
             return resp
         except Exception:
             return RedirectResponse("/login?error=google_failed", status_code=302)
@@ -439,6 +476,15 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
     def admin_stats():
         status, body = handlers.handle_stats(storage, indexer)
         return JSONResponse(body, status_code=status)
+
+    @app.post("/api/admin/discovery/domain", dependencies=[Depends(require_admin)])
+    def admin_discovery_domain(payload: dict):
+        code, body = handlers.handle_admin_discovery_domain_action(
+            storage,
+            domain=str(payload.get("domain", "")),
+            admission=str(payload.get("admission", "")),
+        )
+        return JSONResponse(body, status_code=code)
 
     @app.get("/api/admin/discovery", dependencies=[Depends(require_admin)])
     def admin_discovery(

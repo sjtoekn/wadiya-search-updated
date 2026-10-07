@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import threading
 import time
 
 from itsdangerous import BadSignature, URLSafeTimedSerializer
@@ -64,20 +65,33 @@ class LoginLimiter:
     """Max `limit` failed attempts per `window` seconds per client key (in memory, not persisted)."""
     def __init__(self, limit: int = 5, window: int = 300, clock=time.monotonic):
         self.limit, self.window, self._clock, self._fails = limit, window, clock, {}
+        self._lock = threading.Lock()
 
-    def _recent(self, key):
-        now = self._clock()
-        self._fails[key] = [t for t in self._fails.get(key, []) if now - t < self.window]
-        return self._fails[key]
+    def _recent_locked(self, key, now):
+        recent = [t for t in self._fails.get(key, []) if now - t < self.window]
+        if recent:
+            self._fails[key] = recent
+        else:
+            self._fails.pop(key, None)
+        return recent
 
     def allowed(self, key) -> bool:
-        return len(self._recent(key)) < self.limit
+        with self._lock:
+            return len(self._recent_locked(key, self._clock())) < self.limit
 
     def fail(self, key) -> None:
-        self._recent(key).append(self._clock())
+        with self._lock:
+            now = self._clock()
+            self._recent_locked(key, now)
+            self._fails.setdefault(key, []).append(now)
+            if len(self._fails) > 10000:
+                cutoff = now - self.window
+                for k in list(self._fails):
+                    self._recent_locked(k, cutoff)
 
     def reset(self, key) -> None:
-        self._fails.pop(key, None)
+        with self._lock:
+            self._fails.pop(key, None)
 
 
 class AdminAuth:

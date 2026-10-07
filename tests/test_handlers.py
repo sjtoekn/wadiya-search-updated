@@ -1,3 +1,4 @@
+import hashlib
 from tests.test_search_stack import SearchStackCase
 from wadiya.admin.auth import AdminAuth, hash_password
 from wadiya.api import handlers
@@ -27,7 +28,7 @@ class HandlerTests(SearchStackCase):
         self.assertEqual(body["url"], "https://e.org/1")
         self.assertEqual(body["domain"], "e.org")
         self.assertIn("description", body)
-        self.assertIn("content", body)
+        self.assertNotIn("content", body)
         self.assertIn("crawled_at", body)
 
     def test_input_validation_returns_400_json(self):
@@ -149,7 +150,8 @@ class HandlerTests(SearchStackCase):
         self.assertEqual(status, 200)
         self.assertEqual((st["documents"], st["domains"], st["index"]["documents"]), (1, 1, 1))
         self.assertEqual(st["search"]["search_count"], 1)
-        self.assertEqual(st["search"]["recent_queries"][0]["query"], "wadi")
+        expected_query_hash = hashlib.sha256("wadi".encode("utf-8")).hexdigest()
+        self.assertEqual(st["search"]["recent_queries"][0]["query"], expected_query_hash)
         self.assertEqual(st["crawler"]["status"], "never run")
         self.assertNotIn("path", st["index"])
 

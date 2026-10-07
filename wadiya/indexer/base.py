@@ -31,6 +31,7 @@ class SearchHits:
     total: int            # number of matches (capped by count_cap)
     total_capped: bool
     hits: list = field(default_factory=list)
+    corrected_query: str | None = None
 
 
 DEFAULT_WEIGHTS = {"title": 5.0, "headings": 3.0, "url": 2.0, "domain": 2.0, "description": 1.5, "body": 1.0}

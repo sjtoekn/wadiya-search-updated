@@ -29,6 +29,7 @@ class Document:
     indexed_at: Optional[str] = None
     fail_count: int = 0           # consecutive failed crawls (reset on success)
     nosnippet: bool = False       # publisher requests that search results omit the snippet
+    images: list = None           # image candidates extracted from the crawled page
 
 
 @dataclass
@@ -93,7 +94,9 @@ class Storage(ABC):
     def get_user_by_email(self, email: str) -> Optional[User]: ...
     @abstractmethod
     def get_user(self, user_id: int) -> Optional[User]: ...
+    @abstractmethod
     def get_user_by_google_subject(self, google_subject: str) -> Optional[User]: ...
+    @abstractmethod
     def link_google_subject(self, user_id: int, google_subject: str,
                             reset_password_hash: Optional[str] = None) -> Optional[User]: ...
     @abstractmethod
@@ -106,7 +109,10 @@ class Storage(ABC):
     def claim_next(self, exclude_domains: Sequence[str] = ()) -> Optional[QueueItem]: ...
     @abstractmethod
     def mark_url(self, url: str, status: str, http_status: Optional[int] = None,
-                 error: Optional[str] = None) -> None: ...
+                 error: Optional[str] = None,
+                 next_crawl_at: Optional[str] = None) -> None: ...
+    @abstractmethod
+    def get_url_attempts(self, url: str) -> int: ...
     @abstractmethod
     def queue_size(self) -> int: ...
     @abstractmethod
@@ -118,7 +124,29 @@ class Storage(ABC):
     @abstractmethod
     def requeue_stale(self) -> int: ...
     @abstractmethod
+    def requeue_due_urls(self) -> int: ...
+    @abstractmethod
+    def get_domain_freshness(self, domain: str) -> Optional[float]: ...
+    @abstractmethod
     def reset_queue(self) -> None: ...
+
+    # ---- discovery registry ----
+    @abstractmethod
+    def register_discovered_site(self, url: str, domain: str, source: str,
+                                 status: str = "pending") -> bool: ...
+    @abstractmethod
+    def list_discovered_sites(self, status: Optional[str] = None,
+                              limit: int = 100,
+                              *,
+                              eligible_only: bool = False) -> list: ...
+    @abstractmethod
+    def get_discovered_site(self, url: str) -> Optional[dict]: ...
+    @abstractmethod
+    def mark_discovered_site_crawled(self, url: str, success: bool,
+                                     error: Optional[str] = None,
+                                     next_attempt_at: Optional[str] = None) -> None: ...
+    @abstractmethod
+    def set_discovery_domain_admission(self, domain: str, admission: str) -> None: ...
 
     # ---- crawl metrics ----
     @abstractmethod

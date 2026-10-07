@@ -28,6 +28,20 @@
   </header>
 
   <main>
+    <nav
+      id="searchModes"
+      class="search-modes"
+      aria-label="Search type"
+      hidden
+    >
+      <a href="#" class="search-mode is-active" data-search-mode="web">Web</a>
+      <a href="#" class="search-mode" data-search-mode="images">Images</a>
+      <a href="#" class="search-mode" data-search-mode="videos">Videos</a>
+      <a href="#" class="search-mode" data-search-mode="documents">Documents</a>
+      <a href="#" class="search-mode" data-search-mode="news">News</a>
+      <a href="#" class="search-mode" data-search-mode="maps">Maps</a>
+    </nav>
+
     <p class="lede"></p>
     <div id="status" class="status" role="status" aria-live="polite"></div>
     <div id="results" class="results"></div>

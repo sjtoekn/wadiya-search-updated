@@ -127,8 +127,59 @@
 
       row.appendChild(urlCell);
 
+      var domainCell = el('td', fmt(site.domain));
+      domainCell.className = 'discovery-domain-name';
+      row.appendChild(domainCell);
+
+      var admission = site.admission || 'auto';
+      var admissionCell = el('td');
+      var badge = el('span', admission);
+      badge.className = 'discovery-admission discovery-admission-' + admission;
+      admissionCell.appendChild(badge);
+      row.appendChild(admissionCell);
+
+      var actionsCell = el('td');
+
+      if (admission !== 'auto') {
+        var select = el('select');
+        select.className = 'discovery-domain-action-select';
+        select.setAttribute('aria-label', 'Actions for ' + (site.domain || 'domain'));
+
+        [
+          ['auto', 'Approve'],
+          ['quarantine', 'Quarantine'],
+          ['blocked', 'Block']
+        ].forEach(function (item) {
+          var option = el('option', item[1]);
+          option.value = item[0];
+          select.appendChild(option);
+        });
+
+        select.value = admission;
+
+        select.addEventListener('change', function () {
+          var next = select.value;
+
+          if (!window.confirm(
+            'Are you sure you want to set "' +
+            (site.domain || 'domain') +
+            '" to ' +
+            next +
+            '?'
+          )) {
+            select.value = admission;
+            return;
+          }
+
+          updateDomainAdmission(site.domain || '', next);
+        });
+
+        actionsCell.appendChild(select);
+      }
+
+      row.appendChild(actionsCell);
+
       [
-        site.domain,
         site.source,
         site.status,
         date(site.first_seen_at),
@@ -142,6 +193,76 @@
 
       tbody.appendChild(row);
     });
+  }
+
+  function updateDomainAdmission(domain, admission) {
+    if (!domain || !admission) return;
+
+    var label =
+      admission === 'auto'
+        ? 'approve'
+        : admission === 'quarantine'
+          ? 'quarantine'
+          : 'block';
+
+    if (!window.confirm(
+      'Are you sure you want to ' + label + ' the domain "' + domain + '"?'
+    )) {
+      return;
+    }
+
+    setStatus('Updating ' + domain + '…');
+
+    fetch('/api/admin/discovery/domain', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json'
+      },
+      body: JSON.stringify({
+        domain: domain,
+        admission: admission
+      })
+    })
+      .then(function (response) {
+        return response.json().catch(function () {
+          return {};
+        }).then(function (body) {
+          return { response: response, body: body };
+        });
+      })
+      .then(function (result) {
+        if (result.response.status === 401) {
+          window.location.href = '/admin';
+          return;
+        }
+
+        if (!result.response.ok) {
+          throw new Error(
+            result.body.error && result.body.error.message
+              ? result.body.error.message
+              : 'Could not update domain admission.'
+          );
+        }
+
+        setStatus(
+          domain +
+          ' → ' +
+          admission +
+          ' (' +
+          Number(result.body.updated_sites || 0).toLocaleString() +
+          ' URLs updated)'
+        );
+
+        load();
+      })
+      .catch(function (error) {
+        setStatus(
+          error.message || 'Could not update domain admission.',
+          true
+        );
+      });
   }
 
   function renderPagination(pagination) {

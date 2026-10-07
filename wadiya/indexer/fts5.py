@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from .base import DEFAULT_WEIGHTS, Hit, IndexDocument, Indexer, SearchHits
+from ..unicode_text import is_word_text
 
 TOKENIZER = "porter unicode61 remove_diacritics 2"
 
@@ -91,10 +92,12 @@ class FTS5Indexer(Indexer):
 
     @staticmethod
     def _typo_distance_one(a: str, b: str) -> bool:
-        if a == b or abs(len(a) - len(b)) > 1:
+        if a == b:
+            return True
+        if abs(len(a) - len(b)) > 1:
             return False
 
-        if not a.isalpha() or not b.isalpha():
+        if not is_word_text(a) or not is_word_text(b):
             return False
 
         if len(a) == len(b):
@@ -141,13 +144,17 @@ class FTS5Indexer(Indexer):
 
         with self._conn() as c:
             vocab_rows = c.execute(
-                "SELECT term FROM docs_fts_vocab"
+                "SELECT term, doc FROM docs_fts_vocab "
+                "WHERE length(term) >= 4"
             ).fetchall()
 
-            vocab = {row["term"] for row in vocab_rows}
+            vocab = tuple(
+                (row["term"], int(row["doc"] or 0))
+                for row in vocab_rows
+            )
 
             for term in query.terms:
-                if len(term) < 4:
+                if len(term) < 4 or not term.isalpha():
                     continue
 
                 # Porter vocabulary contains stems, so first check whether
@@ -166,15 +173,17 @@ class FTS5Indexer(Indexer):
                     continue
 
                 candidates = [
-                    candidate
-                    for candidate in vocab
-                    if len(candidate) >= 4
-                    and abs(len(candidate) - len(term)) <= 1
+                    (candidate, frequency)
+                    for candidate, frequency in vocab
+                    if abs(len(candidate) - len(term)) <= 1
                     and self._typo_distance_one(term, candidate)
                 ]
 
                 if candidates:
-                    corrections[term] = min(candidates)
+                    corrections[term] = max(
+                        candidates,
+                        key=lambda item: (item[1], item[0]),
+                    )[0]
 
         if not corrections:
             return query
@@ -210,7 +219,7 @@ class FTS5Indexer(Indexer):
 
         match = joiner.join(parts)
 
-        if query.excluded_terms:
+        if query.excluded_terms and match:
             exclusions = " ".join(f'NOT "{t}"' for t in query.excluded_terms)
             match = f"{match} {exclusions}".strip()
 
@@ -222,16 +231,26 @@ class FTS5Indexer(Indexer):
         w = {**DEFAULT_WEIGHTS, **(weights or {})}
         match = self.build_match(query, match_all)
 
-        if not match:
+        if not match and not query.excluded_terms and not query.sites and not query.filetypes:
             return SearchHits(0, False, [])
 
         filters = []
         params = []
 
         if query.sites:
-            placeholders = ",".join("?" for _ in query.sites)
-            filters.append(f"lower(domain) IN ({placeholders})")
-            params.extend(query.sites)
+            site_parts = []
+            for site in query.sites:
+                # site:example.com matches the apex domain and all subdomains,
+                # but not lookalikes such as notexample.com.
+                site_parts.extend([
+                    "lower(domain) = ?",
+                    "lower(domain) LIKE ?",
+                ])
+                params.extend([
+                    site,
+                    f"%.{site}",
+                ])
+            filters.append("(" + " OR ".join(site_parts) + ")")
 
         if query.filetypes:
             filetype_parts = []
@@ -249,8 +268,18 @@ class FTS5Indexer(Indexer):
                 ])
             filters.append("(" + " OR ".join(filetype_parts) + ")")
 
-        where = "docs_fts MATCH ?"
-        where_params = [match]
+        where_params = []
+
+        if match:
+            where = "docs_fts MATCH ?"
+            where_params.append(match)
+        else:
+            where = "1=1"
+            for term in query.excluded_terms:
+                filters.append(
+                    "rowid NOT IN (SELECT rowid FROM docs_fts WHERE docs_fts MATCH ?)"
+                )
+                params.append(f'"{term}"')
 
         if filters:
             where += " AND " + " AND ".join(filters)
@@ -294,7 +323,7 @@ class FTS5Indexer(Indexer):
         if result.total == 0 and _allow_typo:
             corrected = self._correct_query(query)
             if corrected != query:
-                return self.search(
+                corrected_result = self.search(
                     corrected,
                     limit,
                     offset,
@@ -302,6 +331,10 @@ class FTS5Indexer(Indexer):
                     weights,
                     count_cap,
                     False,
+                )
+                return replace(
+                    corrected_result,
+                    corrected_query=corrected.normalized,
                 )
 
         return result
