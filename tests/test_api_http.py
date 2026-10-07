@@ -341,7 +341,7 @@ class ApiHttpTests(SearchStackCase):
         self.assertTrue(body["submitted"])
         self.assertEqual(body["status"], "pending")
         self.assertEqual(body["url"], "https://example.com/")
-        self.assertEqual(body["domain"], "https://example.com/")
+        self.assertEqual(body["domain"], "example.com")
 
 
     def test_submit_website_rate_limit(self):

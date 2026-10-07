@@ -241,7 +241,7 @@ def handle_submit_website(storage, url: str) -> tuple:
             "submitted": False,
             "status": existing.get("status", "pending"),
             "url": existing.get("url", normalized),
-            "domain": normalized,
+            "domain": domain,
             "message": "This website is already in the discovery queue.",
         }
 
@@ -259,7 +259,7 @@ def handle_submit_website(storage, url: str) -> tuple:
             "submitted": False,
             "status": existing.get("status", "pending") if existing else "pending",
             "url": normalized,
-            "domain": normalized,
+            "domain": domain,
             "message": "This website is already in the discovery queue.",
         }
 
@@ -268,7 +268,7 @@ def handle_submit_website(storage, url: str) -> tuple:
         "submitted": True,
         "status": "pending",
         "url": normalized,
-        "domain": normalized,
+        "domain": domain,
         "message": "Website submitted successfully. It will be crawled automatically.",
     }
 
