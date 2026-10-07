@@ -86,13 +86,13 @@
     var first = el(
       'span',
       null,
-      'First crawled: ' + formatDateTime(data.first_crawled_at)
+      'First crawled: ' + formatDateTime(data.first_crawled)
     );
 
     var last = el(
       'span',
       null,
-      'Last crawled: ' + formatDateTime(data.last_crawled_at)
+      'Last crawled: ' + formatDateTime(data.last_crawled)
     );
 
     meta.appendChild(first);

@@ -389,3 +389,25 @@ When a significant milestone is completed, record:
 ---
 
 # End of 2026-10-07 Entry
+
+## 2026-10-07 — Discovery UI Contract Fix Verified
+
+The Website Discovery runtime path was audited end-to-end using real local discovery data.
+
+Verified:
+- `/api/discovery?domain=github.com` returns HTTP 200 with real discovery data.
+- `/discovery?domain=github.com` returns HTTP 200.
+- Browser rendering successfully displays discovered page count, page title, URL, description, language, and crawl timestamp.
+- Browser console errors: 0.
+- Browser page errors: 0.
+
+A frontend/API contract mismatch was identified:
+- Backend returns `first_crawled` and `last_crawled`.
+- `discovery.js` was incorrectly reading `first_crawled_at` and `last_crawled_at`.
+- The frontend was corrected to use the actual API contract.
+
+The fix was limited to `wadiya/web/discovery.js` and was browser-verified.
+
+Checkpoint rule:
+- Commit this verified Discovery UI correction separately.
+- Do not include unrelated existing working-tree changes in this checkpoint.
