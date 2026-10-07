@@ -376,7 +376,17 @@ def handle_google_user(storage, sessions, google_subject, email, display_name):
         if user:
             if user.status != "active":
                 return 403, {"error": {"message": "account is not active"}}, None
-            user = storage.link_google_subject(user.id, google_subject)
+            if user.google_subject and user.google_subject != google_subject:
+                # This email already belongs to a different Google identity: never re-link.
+                return 403, {"error": {"message": "account is linked to a different Google identity"}}, None
+            # Password accounts have no email verification, so whoever registered this email may
+            # not own it. Google has just proven ownership, so replace any existing password
+            # (an attacker's pre-registered password stops working) in the same transaction.
+            user = storage.link_google_subject(
+                user.id,
+                google_subject,
+                reset_password_hash=hash_password(secrets.token_urlsafe(32)),
+            )
         else:
             # Google-only accounts receive an unreachable random password hash.
             user = storage.create_user(

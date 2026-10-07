@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Sequence
 
-from .base import Document, QueueItem, SaveResult, Storage, now_iso
+from .base import Document, QueueItem, SaveResult, Storage, User, now_iso
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -104,6 +104,19 @@ CREATE INDEX IF NOT EXISTS idx_discovered_sites_status
   ON discovered_sites(status, id);
 CREATE INDEX IF NOT EXISTS idx_discovered_sites_source
   ON discovered_sites(source, id);
+
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  password_hash TEXT NOT NULL,
+  display_name TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  google_subject TEXT UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+-- Google identity index is created by migration 7 after the column exists.
 """
 
 _RUN_COLS = ("attempted", "fetched", "robots_blocked", "failed", "stored",
@@ -114,7 +127,7 @@ _COUNTED = ("done", "duplicate", "noindex")   # statuses that consumed a page of
 QUERY_LOG_KEEP = 10_000
 
 # Database schema version. Increment this when a new migration is added.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 
 
 def _doc(row: sqlite3.Row) -> Document:
@@ -267,11 +280,104 @@ class SQLiteStorage(Storage):
                 c.execute("PRAGMA user_version = 5")
                 current_version = 5
 
+            # Migration 6: public user accounts.
+            if current_version < 6:
+                c.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS users (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                      password_hash TEXT NOT NULL,
+                      display_name TEXT NOT NULL DEFAULT '',
+                      status TEXT NOT NULL DEFAULT 'active',
+                      created_at TEXT NOT NULL,
+                      updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_users_status ON users(status)"
+                )
+                c.execute("PRAGMA user_version = 6")
+                current_version = 6
+
+            # Migration 7: Google OAuth identity.
+            if current_version < 7:
+                cols = {
+                    r[1]
+                    for r in c.execute("PRAGMA table_info(users)")
+                }
+                if "google_subject" not in cols:
+                    c.execute("ALTER TABLE users ADD COLUMN google_subject TEXT")
+                c.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_subject "
+                    "ON users(google_subject) WHERE google_subject IS NOT NULL"
+                )
+                c.execute("PRAGMA user_version = 7")
+                current_version = 7
+
             if current_version != SCHEMA_VERSION:
                 raise RuntimeError(
                     f"database migration incomplete: "
                     f"version {current_version}, expected {SCHEMA_VERSION}"
                 )
+
+    # ------------------------------------------------------------------ users
+    def get_user_by_google_subject(self, google_subject: str) -> Optional[User]:
+        with self._conn() as c:
+            r = c.execute(
+                "SELECT * FROM users WHERE google_subject=?",
+                (google_subject,),
+            ).fetchone()
+            return User(**dict(r)) if r else None
+
+    def link_google_subject(self, user_id: int, google_subject: str,
+                            reset_password_hash: Optional[str] = None) -> Optional[User]:
+        """Link a Google identity. If reset_password_hash is given, the password is replaced
+        in the SAME transaction (used to neutralise a password set by an unverified registrant)."""
+        now = now_iso()
+        with self._conn(write=True) as c:
+            c.execute(
+                "UPDATE users SET google_subject=?, password_hash=COALESCE(?, password_hash), "
+                "updated_at=? WHERE id=?",
+                (google_subject, reset_password_hash, now, user_id),
+            )
+            r = c.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+            return User(**dict(r)) if r else None
+
+    def create_user(self, email: str, password_hash: str, display_name: str) -> User:
+        now = now_iso()
+        with self._conn(write=True) as c:
+            cur = c.execute(
+                "INSERT INTO users (email,password_hash,display_name,created_at,updated_at) "
+                "VALUES (?,?,?,?,?)",
+                (email.strip().lower(), password_hash, display_name.strip(), now, now),
+            )
+            return User(cur.lastrowid, email.strip().lower(), password_hash,
+                        display_name.strip(), now, now, "active")
+
+    def get_user_by_email(self, email: str) -> Optional[User]:
+        with self._conn() as c:
+            r = c.execute(
+                "SELECT * FROM users WHERE email=? COLLATE NOCASE",
+                (email.strip().lower(),),
+            ).fetchone()
+            return User(**dict(r)) if r else None
+
+    def get_user(self, user_id: int) -> Optional[User]:
+        with self._conn() as c:
+            r = c.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+            return User(**dict(r)) if r else None
+
+    def update_user_profile(self, user_id: int, display_name: str) -> Optional[User]:
+        now = now_iso()
+        with self._conn(write=True) as c:
+            c.execute(
+                "UPDATE users SET display_name=?, updated_at=? WHERE id=?",
+                (display_name.strip(), now, user_id),
+            )
+            r = c.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+            return User(**dict(r)) if r else None
 
     # ------------------------------------------------------------------ documents
     def save_document(self, doc: Document) -> SaveResult:

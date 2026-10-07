@@ -32,6 +32,18 @@ class Document:
 
 
 @dataclass
+class User:
+    id: Optional[int]
+    email: str
+    password_hash: str
+    display_name: str
+    created_at: str
+    updated_at: str
+    status: str = "active"
+    google_subject: Optional[str] = None
+
+
+@dataclass
 class QueueItem:
     id: int
     url: str
@@ -73,6 +85,19 @@ class Storage(ABC):
     def count_documents(self) -> int: ...
     @abstractmethod
     def count_domains(self) -> int: ...
+
+    # ---- users ----
+    @abstractmethod
+    def create_user(self, email: str, password_hash: str, display_name: str) -> User: ...
+    @abstractmethod
+    def get_user_by_email(self, email: str) -> Optional[User]: ...
+    @abstractmethod
+    def get_user(self, user_id: int) -> Optional[User]: ...
+    def get_user_by_google_subject(self, google_subject: str) -> Optional[User]: ...
+    def link_google_subject(self, user_id: int, google_subject: str,
+                            reset_password_hash: Optional[str] = None) -> Optional[User]: ...
+    @abstractmethod
+    def update_user_profile(self, user_id: int, display_name: str) -> Optional[User]: ...
 
     # ---- URL queue ----
     @abstractmethod
