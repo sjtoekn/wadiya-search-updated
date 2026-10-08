@@ -36,11 +36,26 @@ def handle_search(service, q, page_raw, search_type="web") -> tuple:
         if search_type == "images":
             return 200, service.search_images(q, page)
 
+        if search_type == "videos":
+            return 200, service.search_videos(q, page)
+
+        if search_type == "documents":
+            return 200, service.search_documents(q, page)
+
+        if search_type == "news":
+            return 200, service.search_news(q, page)
+
+        if search_type == "maps":
+            return 200, service.search_maps(q, page)
+
         if search_type == "books":
             return 200, service.search_books(q, page)
 
         if search_type == "finance":
             return 200, service.search_finance(q, page)
+
+        if search_type == "crypto":
+            return 200, service.search_crypto(q, page)
 
         return error(400, "unsupported search type")
     except InvalidSearchRequest as e:

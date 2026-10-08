@@ -12,6 +12,7 @@ from ..ranking.base import Ranker
 from ..storage.base import Storage
 from .books import BooksProvider, StaticBooksProvider
 from .finance import FinanceProvider
+from .crypto import CryptoProvider
 from .snippets import make_snippet
 
 
@@ -28,10 +29,12 @@ class SearchService:
         ranker: Ranker,
         books_provider: BooksProvider | None = None,
         finance_provider: FinanceProvider | None = None,
+        crypto_provider: CryptoProvider | None = None,
     ):
         self.s, self.storage, self.indexer, self.ranker = settings, storage, indexer, ranker
         self.books_provider = books_provider or StaticBooksProvider()
         self.finance_provider = finance_provider
+        self.crypto_provider = crypto_provider
 
     def search_books(self, raw_query, page: int = 1) -> dict:
         """Search Books through the configured Books provider."""
@@ -154,6 +157,65 @@ class SearchService:
             "results": results,
         }
 
+    def search_crypto(self, raw_query, page: int = 1) -> dict:
+        """Search cryptocurrency data through the configured Crypto provider."""
+        t0 = time.perf_counter()
+
+        if not isinstance(raw_query, str):
+            raise InvalidSearchRequest("query must be a string")
+
+        raw = raw_query.strip()
+        if not raw:
+            raise InvalidSearchRequest("query is required")
+
+        try:
+            q = parse_query(raw, self.s.max_query_length, self.s.max_query_terms)
+        except QueryError as e:
+            raise InvalidSearchRequest(str(e))
+
+        if not isinstance(page, int) or page < 1 or page > self.s.max_pages:
+            raise InvalidSearchRequest(f"page must be between 1 and {self.s.max_pages}")
+
+        if self.crypto_provider is None:
+            rows = []
+        else:
+            window = self.s.page_size * self.s.max_pages
+            rows = self.crypto_provider.search(
+                q.raw.strip(),
+                limit=window,
+                offset=0,
+            )
+
+        start = (page - 1) * self.s.page_size
+        page_rows = rows[start:start + self.s.page_size]
+
+        results = [
+            {
+                "symbol": item.symbol,
+                "name": item.name,
+                "type": item.asset_type,
+                "rank": item.rank,
+                "price": item.price,
+                "change": item.change,
+                "change_percent": item.change_percent,
+                "currency": item.currency,
+            }
+            for item in page_rows
+        ]
+
+        latency = round((time.perf_counter() - t0) * 1000, 2)
+
+        return {
+            "query": raw,
+            "page": page,
+            "page_size": self.s.page_size,
+            "total_pages": math.ceil(len(rows) / self.s.page_size),
+            "result_count": len(rows),
+            "result_count_exact": len(rows) < self.s.page_size * self.s.max_pages,
+            "latency_ms": latency,
+            "results": results,
+        }
+
     def search_images(self, raw_query, page: int = 1) -> dict:
         """Search persisted page images without changing the normal web-search path."""
         t0 = time.perf_counter()
@@ -208,6 +270,241 @@ class SearchService:
             "latency_ms": latency,
             "results": results,
         }
+
+
+    def search_videos(self, raw_query, page: int = 1) -> dict:
+        """Search persisted page videos without changing the normal web-search path."""
+        t0 = time.perf_counter()
+
+        if not isinstance(raw_query, str):
+            raise InvalidSearchRequest("query must be a string")
+
+        raw = raw_query.strip()
+        if not raw:
+            raise InvalidSearchRequest("query is required")
+
+        try:
+            q = parse_query(raw, self.s.max_query_length, self.s.max_query_terms)
+        except QueryError as e:
+            raise InvalidSearchRequest(str(e))
+
+        if not isinstance(page, int) or page < 1 or page > self.s.max_pages:
+            raise InvalidSearchRequest(f"page must be between 1 and {self.s.max_pages}")
+
+        # Video search currently uses the literal user query against video/page
+        # metadata. This deliberately does not reuse FTS ranking.
+        window = self.s.page_size * self.s.max_pages
+        rows = self.storage.search_videos(
+            q.raw.strip(),
+            limit=window,
+            offset=0,
+        )
+
+        start = (page - 1) * self.s.page_size
+        page_rows = rows[start:start + self.s.page_size]
+
+        results = [
+            {
+                "video_url": row["video_url"],
+                "kind": row["kind"],
+                "source_page_url": row["source_page_url"],
+                "source_domain": row["source_domain"],
+                "title": row["title"] or row["page_title"] or row["source_page_url"],
+                "thumbnail_url": row["thumbnail_url"],
+            }
+            for row in page_rows
+        ]
+
+        latency = round((time.perf_counter() - t0) * 1000, 2)
+
+        return {
+            "query": raw,
+            "page": page,
+            "page_size": self.s.page_size,
+            "total_pages": math.ceil(len(rows) / self.s.page_size),
+            "result_count": len(rows),
+            "result_count_exact": len(rows) < window,
+            "latency_ms": latency,
+            "results": results,
+        }
+
+    def search_documents(self, raw_query, page: int = 1) -> dict:
+        """Search indexed documents using the normal retrieval/ranking pipeline."""
+        return self.search(raw_query, page)
+
+    def search_news(self, raw_query, page: int = 1) -> dict:
+        """Search documents discovered through RSS/Atom news feeds."""
+        t0 = time.perf_counter()
+        try:
+            q = parse_query(raw_query, self.s.max_query_length, self.s.max_query_terms)
+        except QueryError as e:
+            raise InvalidSearchRequest(str(e))
+        if not isinstance(page, int) or page < 1 or page > self.s.max_pages:
+            raise InvalidSearchRequest(f"page must be between 1 and {self.s.max_pages}")
+
+        window = self.s.page_size * self.s.max_pages
+
+        news_doc_ids = self.storage.search_news_document_ids()
+
+        res = self.indexer.search(
+            q,
+            window,
+            0,
+            True,
+            self.ranker.field_weights,
+            self.s.count_cap,
+            allowed_doc_ids=news_doc_ids,
+        )
+        mode = "all"
+
+        if res.total == 0 and len(q.terms) + len(q.phrases) > 1:
+            res = self.indexer.search(
+                q,
+                window,
+                0,
+                False,
+                self.ranker.field_weights,
+                self.s.count_cap,
+                allowed_doc_ids=news_doc_ids,
+            )
+            mode = "any"
+
+        candidate_docs = self.storage.get_documents([h.doc_id for h in res.hits])
+        ranked = self.ranker.rank(q, res.hits, candidate_docs)
+
+        start = (page - 1) * self.s.page_size
+        page_hits = ranked[start:start + self.s.page_size]
+
+        docs = {
+            h.doc_id: candidate_docs[h.doc_id]
+            for h in page_hits
+            if h.doc_id in candidate_docs
+        }
+
+        results = []
+        for h in page_hits:
+            d = docs.get(h.doc_id)
+            if d is None or d.status != "ok":
+                continue
+
+            results.append({
+                "title": d.title or d.url,
+                "url": d.url,
+                "domain": d.domain,
+                "snippet": "" if d.nosnippet else make_snippet(
+                    d.content,
+                    q.all_terms,
+                    fallback=d.description,
+                ),
+            })
+
+        reachable = min(res.total, window)
+        latency = round((time.perf_counter() - t0) * 1000, 2)
+
+        response = {
+            "query": q.raw.strip(),
+            "page": page,
+            "page_size": self.s.page_size,
+            "total_pages": math.ceil(reachable / self.s.page_size),
+            "result_count": res.total,
+            "result_count_exact": not res.total_capped,
+            "match": mode,
+            "latency_ms": latency,
+            "results": results,
+        }
+
+        if res.corrected_query:
+            response["corrected_query"] = res.corrected_query
+
+        return response
+
+    def search_maps(self, raw_query, page: int = 1) -> dict:
+        """Search indexed documents that contain structured map locations."""
+        t0 = time.perf_counter()
+        try:
+            q = parse_query(raw_query, self.s.max_query_length, self.s.max_query_terms)
+        except QueryError as e:
+            raise InvalidSearchRequest(str(e))
+        if not isinstance(page, int) or page < 1 or page > self.s.max_pages:
+            raise InvalidSearchRequest(f"page must be between 1 and {self.s.max_pages}")
+
+        window = self.s.page_size * self.s.max_pages
+        map_doc_ids = self.storage.search_maps_document_ids()
+
+        res = self.indexer.search(
+            q,
+            window,
+            0,
+            True,
+            self.ranker.field_weights,
+            self.s.count_cap,
+            allowed_doc_ids=map_doc_ids,
+        )
+        mode = "all"
+
+        if res.total == 0 and len(q.terms) + len(q.phrases) > 1:
+            res = self.indexer.search(
+                q,
+                window,
+                0,
+                False,
+                self.ranker.field_weights,
+                self.s.count_cap,
+                allowed_doc_ids=map_doc_ids,
+            )
+            mode = "any"
+
+        candidate_docs = self.storage.get_documents([h.doc_id for h in res.hits])
+        ranked = self.ranker.rank(q, res.hits, candidate_docs)
+
+        start = (page - 1) * self.s.page_size
+        page_hits = ranked[start:start + self.s.page_size]
+
+        results = []
+        for h in page_hits:
+            d = candidate_docs.get(h.doc_id)
+            if d is None or d.status != "ok":
+                continue
+
+            locations = self.storage.get_document_locations(h.doc_id)
+            for location in locations:
+                results.append({
+                    "title": d.title or d.url,
+                    "url": d.url,
+                    "domain": d.domain,
+                    "snippet": "" if d.nosnippet else make_snippet(
+                        d.content,
+                        q.all_terms,
+                        fallback=d.description,
+                    ),
+                    "latitude": location["latitude"],
+                    "longitude": location["longitude"],
+                    "address": location["address"],
+                    "city": location["city"],
+                    "region": location["region"],
+                    "country": location["country"],
+                    "source": location["source"],
+                })
+
+        reachable = min(res.total, window)
+        latency = round((time.perf_counter() - t0) * 1000, 2)
+
+        response = {
+            "query": q.raw.strip(),
+            "page": page,
+            "page_size": self.s.page_size,
+            "total_pages": math.ceil(reachable / self.s.page_size),
+            "result_count": len(results),
+            "result_count_exact": not res.total_capped,
+            "match": mode,
+            "latency_ms": latency,
+            "results": results,
+        }
+
+        if res.corrected_query:
+            response["corrected_query"] = res.corrected_query
+
+        return response
 
     def search(self, raw_query, page: int = 1) -> dict:
         t0 = time.perf_counter()

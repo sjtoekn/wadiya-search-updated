@@ -153,6 +153,640 @@
     return card;
   }
 
+
+  function renderVideoResult(r) {
+    var card = el('article', 'video-card');
+    var videoUrl = safeHttpUrl(r.video_url);
+    var sourceHref = safeHttpUrl(r.source_page_url);
+
+    if (!videoUrl) return card;
+
+    var media = el('div', 'video-card-media');
+
+    if (r.kind === 'embed') {
+      var allowedEmbed =
+        /^https:\/\/(?:www\.)?youtube\.com\/embed\//i.test(videoUrl) ||
+        /^https:\/\/(?:www\.)?youtube-nocookie\.com\/embed\//i.test(videoUrl) ||
+        /^https:\/\/player\.vimeo\.com\/video\//i.test(videoUrl);
+
+      if (allowedEmbed) {
+        var iframe = document.createElement('iframe');
+        iframe.src = videoUrl;
+        iframe.title = r.title || 'Video result';
+        iframe.loading = 'lazy';
+        iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
+        iframe.setAttribute('allowfullscreen', '');
+        iframe.referrerPolicy = 'strict-origin-when-cross-origin';
+        media.appendChild(iframe);
+      } else {
+        media.appendChild(el('div', 'video-fallback', 'Video provider unavailable'));
+      }
+    } else {
+      var video = document.createElement('video');
+      video.controls = true;
+      video.preload = 'metadata';
+      video.playsInline = true;
+
+      var posterUrl = '';
+      if (r.thumbnail_url) {
+        posterUrl = safeHttpUrl(r.thumbnail_url) || '';
+        if (posterUrl) {
+          video.poster = posterUrl;
+        }
+      }
+
+      var source = document.createElement('source');
+      source.src = videoUrl;
+
+      if (/\.webm(?:$|\?)/i.test(videoUrl)) {
+        source.type = 'video/webm';
+      } else if (/\.mp4(?:$|\?)/i.test(videoUrl)) {
+        source.type = 'video/mp4';
+      }
+
+      video.appendChild(source);
+      media.appendChild(video);
+
+      var fallback = el('div', 'video-fallback');
+
+      if (posterUrl) {
+        var fallbackImage = document.createElement('img');
+        fallbackImage.src = posterUrl;
+        fallbackImage.alt = '';
+        fallbackImage.loading = 'lazy';
+        fallbackImage.setAttribute('aria-hidden', 'true');
+        fallback.appendChild(fallbackImage);
+      }
+
+      var fallbackContent = el('div', 'video-fallback-content');
+      fallbackContent.appendChild(
+        el('div', 'video-fallback-message', 'This video can\'t be played here.')
+      );
+
+      var fallbackLink = el('a', 'video-direct-link', 'Open original video');
+      fallbackLink.href = videoUrl;
+      fallbackLink.target = '_blank';
+      fallbackLink.rel = 'noopener noreferrer nofollow';
+      fallbackContent.appendChild(fallbackLink);
+
+      fallback.appendChild(fallbackContent);
+      fallback.hidden = true;
+      media.appendChild(fallback);
+
+      var playbackReady = false;
+      var fallbackShown = false;
+
+      function showVideoFallback() {
+        if (playbackReady || fallbackShown) return;
+        fallbackShown = true;
+        video.hidden = true;
+        fallback.hidden = false;
+      }
+
+      function markPlaybackReady() {
+        playbackReady = true;
+      }
+
+      video.addEventListener('loadeddata', markPlaybackReady);
+      video.addEventListener('canplay', markPlaybackReady);
+      video.addEventListener('playing', markPlaybackReady);
+
+      video.addEventListener('error', showVideoFallback);
+      video.addEventListener('stalled', function () {
+        if (video.error) {
+          showVideoFallback();
+        }
+      });
+
+      window.setTimeout(function () {
+        if (!playbackReady && (
+          video.error ||
+          video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
+        )) {
+          showVideoFallback();
+        }
+      }, 5000);
+
+      video.load();
+    }
+
+    card.appendChild(media);
+
+    var body = el('div', 'video-card-body');
+    var title = r.title || r.source_page_url || 'Video result';
+
+    if (sourceHref) {
+      var source = el('a', 'video-card-title', title);
+      source.href = sourceHref;
+      source.target = '_blank';
+      source.rel = 'noopener noreferrer nofollow';
+      body.appendChild(source);
+    } else {
+      body.appendChild(el('div', 'video-card-title', title));
+    }
+
+    if (r.source_domain) {
+      body.appendChild(el('div', 'video-card-domain', r.source_domain));
+    } else if (sourceHref) {
+      try {
+        body.appendChild(
+          el('div', 'video-card-domain', new URL(sourceHref).hostname)
+        );
+      } catch (e) {}
+    }
+
+    card.appendChild(body);
+    return card;
+  }
+
+  function renderFinanceChart(points) {
+    if (!points || !points.length) {
+      return el(
+        'div',
+        'finance-chart-placeholder',
+        'Historical price data unavailable'
+      );
+    }
+
+    var width = 900;
+    var height = 260;
+    var padLeft = 8;
+    var padRight = 8;
+    var padTop = 18;
+    var padBottom = 28;
+
+    var values = points.map(function (point) {
+      return Number(point.close);
+    }).filter(function (value) {
+      return Number.isFinite(value);
+    });
+
+    if (!values.length) {
+      return el(
+        'div',
+        'finance-chart-placeholder',
+        'Historical price data unavailable'
+      );
+    }
+
+    var min = Math.min.apply(Math, values);
+    var max = Math.max.apply(Math, values);
+
+    if (min === max) {
+      min -= 1;
+      max += 1;
+    }
+
+    var innerWidth = width - padLeft - padRight;
+    var innerHeight = height - padTop - padBottom;
+
+    function x(index) {
+      if (points.length === 1) return width / 2;
+      return padLeft + (index / (points.length - 1)) * innerWidth;
+    }
+
+    function y(value) {
+      return padTop + ((max - value) / (max - min)) * innerHeight;
+    }
+
+    var svg = document.createElementNS(
+      'http://www.w3.org/2000/svg',
+      'svg'
+    );
+
+    svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', 'Historical price chart');
+    svg.classList.add('finance-chart-svg');
+
+    var pathData = '';
+
+    points.forEach(function (point, index) {
+      var value = Number(point.close);
+      if (!Number.isFinite(value)) return;
+
+      var command = pathData ? 'L' : 'M';
+      pathData += command + ' ' + x(index).toFixed(2) + ' ' + y(value).toFixed(2) + ' ';
+    });
+
+    var path = document.createElementNS(
+      'http://www.w3.org/2000/svg',
+      'path'
+    );
+
+    path.setAttribute('d', pathData.trim());
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', 'currentColor');
+    path.setAttribute('stroke-width', '2.5');
+    path.setAttribute('stroke-linecap', 'round');
+    path.setAttribute('stroke-linejoin', 'round');
+    path.classList.add('finance-chart-line');
+
+    svg.appendChild(path);
+
+    var latest = values[values.length - 1];
+
+    var latestDot = document.createElementNS(
+      'http://www.w3.org/2000/svg',
+      'circle'
+    );
+
+    latestDot.setAttribute(
+      'cx',
+      x(points.length - 1).toFixed(2)
+    );
+    latestDot.setAttribute(
+      'cy',
+      y(latest).toFixed(2)
+    );
+    latestDot.setAttribute('r', '4');
+    latestDot.setAttribute('fill', 'currentColor');
+    latestDot.classList.add('finance-chart-dot');
+
+    svg.appendChild(latestDot);
+
+    var minLabel = document.createElementNS(
+      'http://www.w3.org/2000/svg',
+      'text'
+    );
+
+    minLabel.setAttribute('x', String(padLeft));
+    minLabel.setAttribute('y', String(height - 6));
+    minLabel.textContent = points[0].date;
+    minLabel.classList.add('finance-chart-axis-label');
+    svg.appendChild(minLabel);
+
+    var maxLabel = document.createElementNS(
+      'http://www.w3.org/2000/svg',
+      'text'
+    );
+
+    maxLabel.setAttribute('x', String(width - padRight));
+    maxLabel.setAttribute('y', String(height - 6));
+    maxLabel.setAttribute('text-anchor', 'end');
+    maxLabel.textContent = points[points.length - 1].date;
+    maxLabel.classList.add('finance-chart-axis-label');
+    svg.appendChild(maxLabel);
+
+    var priceLabel = document.createElementNS(
+      'http://www.w3.org/2000/svg',
+      'text'
+    );
+
+    priceLabel.setAttribute('x', String(width - padRight));
+    priceLabel.setAttribute('y', String(Math.max(14, y(latest) - 10)));
+    priceLabel.setAttribute('text-anchor', 'end');
+    priceLabel.textContent = latest.toFixed(2);
+    priceLabel.classList.add('finance-chart-price-label');
+    svg.appendChild(priceLabel);
+
+    return svg;
+  }
+
+  function loadFinanceHistory(card, symbol, range) {
+    var chart = card.querySelector('.finance-chart-shell');
+    if (!chart || !symbol) return;
+
+    var chartBody = chart.querySelector('.finance-chart-body');
+    if (!chartBody) return;
+
+    chartBody.textContent = 'Loading price history…';
+
+    fetch(
+      '/api/finance/history?symbol=' +
+      encodeURIComponent(symbol) +
+      '&range=' +
+      encodeURIComponent(range),
+      {
+        headers: { Accept: 'application/json' }
+      }
+    )
+      .then(function (response) {
+        return response.json().catch(function () {
+          return {};
+        }).then(function (body) {
+          return {
+            ok: response.ok,
+            body: body
+          };
+        });
+      })
+      .then(function (result) {
+        if (!result.ok || !Array.isArray(result.body.points)) {
+          chartBody.textContent = 'Historical price data unavailable';
+          return;
+        }
+
+        chartBody.textContent = '';
+
+        if (!result.body.points.length) {
+          chartBody.textContent = 'Historical price data unavailable';
+          return;
+        }
+
+        chartBody.appendChild(
+          renderFinanceChart(result.body.points)
+        );
+      })
+      .catch(function () {
+        chartBody.textContent = 'Historical price data unavailable';
+      });
+  }
+
+  function renderFinanceSummary(results) {
+    if (!results || !results.length) return null;
+
+    var r = results[0];
+    var card = el('section', 'finance-summary');
+    card.setAttribute('aria-label', 'Finance summary');
+
+    var header = el('div', 'finance-summary-header');
+
+    var identity = el('div', 'finance-summary-identity');
+
+    var symbol = el('div', 'finance-summary-symbol');
+    symbol.textContent = r.symbol || '';
+    identity.appendChild(symbol);
+
+    var name = el('div', 'finance-summary-name');
+    name.textContent = r.name || r.symbol || 'Finance';
+    identity.appendChild(name);
+
+    if (r.region || r.currency) {
+      var location = [
+        r.region,
+        r.currency ? 'Currency: ' + r.currency : ''
+      ].filter(Boolean).join(' · ');
+
+      identity.appendChild(
+        el('div', 'finance-summary-location', location)
+      );
+    }
+
+    header.appendChild(identity);
+
+    var quote = el('div', 'finance-summary-quote');
+
+    if (r.price !== null && r.price !== undefined) {
+      quote.appendChild(
+        el('div', 'finance-summary-price', String(r.price))
+      );
+
+      var changeParts = [];
+
+      if (r.change !== null && r.change !== undefined) {
+        changeParts.push(String(r.change));
+      }
+
+      if (r.change_percent) {
+        changeParts.push(String(r.change_percent));
+      }
+
+      if (changeParts.length) {
+        quote.appendChild(
+          el('div', 'finance-summary-change', changeParts.join(' · '))
+        );
+      }
+    } else {
+      quote.appendChild(
+        el(
+          'div',
+          'finance-summary-unavailable',
+          'Live quote unavailable'
+        )
+      );
+    }
+
+    header.appendChild(quote);
+    card.appendChild(header);
+
+    var chart = el('div', 'finance-chart-shell');
+    chart.setAttribute('aria-label', 'Price chart');
+
+    var chartLabel = el(
+      'div',
+      'finance-chart-label',
+      'Price history'
+    );
+    chart.appendChild(chartLabel);
+
+    var chartBody = el(
+      'div',
+      'finance-chart-body',
+      'Loading price history…'
+    );
+    chart.appendChild(chartBody);
+
+    card.appendChild(chart);
+
+    var ranges = el('div', 'finance-chart-ranges');
+
+    [
+      '1D',
+      '1W',
+      '1M',
+      '3M',
+      '6M',
+      '1Y',
+      '5Y',
+      'MAX'
+    ].forEach(function (range) {
+      var button = el(
+        'button',
+        'finance-chart-range' +
+          (range === '1M' ? ' is-active' : ''),
+        range
+      );
+
+      button.type = 'button';
+      button.setAttribute(
+        'aria-label',
+        'Price history range ' + range
+      );
+
+      button.addEventListener('click', function () {
+        ranges.querySelectorAll('.finance-chart-range').forEach(
+          function (item) {
+            item.classList.remove('is-active');
+          }
+        );
+
+        button.classList.add('is-active');
+        loadFinanceHistory(card, r.symbol, range);
+      });
+
+      ranges.appendChild(button);
+    });
+
+    card.appendChild(ranges);
+
+    loadFinanceHistory(card, r.symbol, '1M');
+
+    return card;
+  }
+
+
+  function renderFinanceResult(r) {
+    var card = el('article', 'result finance-result');
+    var site = el('div', 'site');
+    site.appendChild(el('i', 'fav'));
+    site.appendChild(el('b', null, r.symbol || ''));
+    if (r.type) site.appendChild(document.createTextNode(' · ' + r.type));
+    card.appendChild(site);
+
+    var h = el('h2', null, r.name || r.symbol || 'Finance result');
+    card.appendChild(h);
+
+    var meta = el('div', 'finance-meta');
+
+    if (r.region) {
+      meta.appendChild(el('div', 'finance-region', r.region));
+    }
+
+    if (r.currency) {
+      meta.appendChild(el('div', 'finance-currency', 'Currency: ' + r.currency));
+    }
+
+    if (r.market_open || r.market_close || r.timezone) {
+      var market = [];
+      if (r.market_open && r.market_close) {
+        market.push(r.market_open + '–' + r.market_close);
+      } else if (r.market_open) {
+        market.push('Open ' + r.market_open);
+      } else if (r.market_close) {
+        market.push('Close ' + r.market_close);
+      }
+      if (r.timezone) market.push(r.timezone);
+      meta.appendChild(el('div', 'finance-market', market.join(' · ')));
+    }
+
+    if (r.price !== null && r.price !== undefined) {
+      var quote = [];
+      quote.push(String(r.price));
+      if (r.change !== null && r.change !== undefined) {
+        quote.push(String(r.change));
+      }
+      if (r.change_percent) {
+        quote.push(String(r.change_percent));
+      }
+      meta.appendChild(el('div', 'finance-quote', quote.join(' · ')));
+    }
+
+    if (r.match_score !== null && r.match_score !== undefined) {
+      meta.appendChild(
+        el('div', 'finance-score', 'Match score: ' + String(r.match_score))
+      );
+    }
+
+    card.appendChild(meta);
+    return card;
+  }
+
+  function renderCryptoResult(r) {
+    var card = el('article', 'result crypto-result');
+
+    var header = el('div', 'crypto-result-header');
+
+    var symbol = el(
+      'div',
+      'crypto-symbol',
+      r.symbol || ''
+    );
+    header.appendChild(symbol);
+
+    var rankText = r.rank != null
+      ? 'Rank #' + String(r.rank)
+      : '';
+
+    if (rankText) {
+      header.appendChild(
+        el('div', 'crypto-rank', rankText)
+      );
+    }
+
+    card.appendChild(header);
+
+    var name = el(
+      'h2',
+      'crypto-name',
+      r.name || r.symbol || 'Crypto result'
+    );
+    card.appendChild(name);
+
+    if (r.asset_type) {
+      card.appendChild(
+        el('div', 'crypto-type', r.asset_type)
+      );
+    }
+
+    var quote = [];
+
+    if (r.price != null) {
+      quote.push(
+        String(r.price) +
+        (r.currency ? ' ' + r.currency : '')
+      );
+    }
+
+    if (r.change != null) {
+      quote.push(String(r.change));
+    }
+
+    if (r.change_percent) {
+      quote.push(String(r.change_percent));
+    }
+
+    if (quote.length) {
+      card.appendChild(
+        el('div', 'crypto-quote', quote.join(' · '))
+      );
+    } else {
+      card.appendChild(
+        el('div', 'crypto-quote-unavailable', 'Price data unavailable')
+      );
+    }
+
+    return card;
+  }
+
+
+  function renderMapResult(r, terms) {
+    var li = el("article", "result map-result"), site = el("div", "site");
+    site.appendChild(el("i", "fav"));
+    site.appendChild(el("b", null, r.domain));
+    site.appendChild(document.createTextNode(crumbs(r.url)));
+
+    var h = el("h2"), href = safeHttpUrl(r.url), a = el(href ? "a" : "span");
+    a.textContent = r.title || r.url;
+    if (href) {
+      a.href = href;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer nofollow";
+    }
+    h.appendChild(a);
+
+    var p = el("p");
+    splitForHighlight(r.snippet || "", terms).forEach(function (part) {
+      p.appendChild(part.hit ? el("mark", null, part.text) : document.createTextNode(part.text));
+    });
+
+    var meta = el("div", "map-meta");
+    var place = [r.address, r.city, r.region, r.country].filter(Boolean).join(", ");
+    if (place) meta.appendChild(el("div", "map-location", place));
+    meta.appendChild(el("div", "map-coordinates", r.latitude + ", " + r.longitude));
+
+    var discover = el("a", "discover-link", "Discover website");
+    discover.href = "/discovery?domain=" + encodeURIComponent(r.domain);
+    discover.setAttribute("aria-label", "Discover " + (r.domain || "this website"));
+
+    li.appendChild(h);
+    li.appendChild(site);
+    li.appendChild(p);
+    li.appendChild(meta);
+    li.appendChild(discover);
+    return li;
+  }
+
   function renderResult(r, terms) {
     var li = el('article', 'result'), site = el('div', 'site');
     site.appendChild(el('i', 'fav'));
@@ -205,6 +839,7 @@
     controller = new AbortController();
     resultsEl.textContent = '';
     resultsEl.classList.toggle('image-results', mode === 'images');
+    resultsEl.classList.toggle('video-results', mode === 'videos');
     pagerEl.textContent = '';
     setStatus('Searching…', false);
     setBusy(true);
@@ -232,9 +867,34 @@
 
         if (mode === 'images') {
           resultsEl.classList.add('image-results');
+          resultsEl.classList.remove('video-results');
           d.results.forEach(function (r) { resultsEl.appendChild(renderImageResult(r)); });
-        } else {
+        } else if (mode === 'videos') {
+          resultsEl.classList.add('video-results');
           resultsEl.classList.remove('image-results');
+          d.results.forEach(function (r) { resultsEl.appendChild(renderVideoResult(r)); });
+        } else if (mode === 'maps') {
+          resultsEl.classList.remove('image-results', 'video-results');
+          d.results.forEach(function (r) { resultsEl.appendChild(renderMapResult(r, terms)); });
+        } else if (mode === 'finance') {
+          resultsEl.classList.remove('image-results', 'video-results');
+
+          var financeSummary = renderFinanceSummary(d.results);
+          if (financeSummary) {
+            resultsEl.appendChild(financeSummary);
+          }
+
+          d.results.forEach(function (r) {
+            resultsEl.appendChild(renderFinanceResult(r));
+          });
+        } else if (mode === 'crypto') {
+          resultsEl.classList.remove('image-results', 'video-results');
+
+          d.results.forEach(function (r) {
+            resultsEl.appendChild(renderCryptoResult(r));
+          });
+        } else {
+          resultsEl.classList.remove('image-results', 'video-results');
           d.results.forEach(function (r) { resultsEl.appendChild(renderResult(r, terms)); });
         }
 
@@ -251,7 +911,10 @@
   form.addEventListener('submit', function (e) { e.preventDefault(); search(input.value, 1, true); });   // button + Enter
   pagerEl.addEventListener('click', function (e) {
     var a = e.target.closest('a[data-page]'); if (!a) return;
-    e.preventDefault(); search(input.value, parseInt(a.dataset.page, 10), true);
+    e.preventDefault();
+    var currentUrl = new URL(window.location.href);
+    var currentMode = currentUrl.searchParams.get('type') || 'web';
+    search(input.value, parseInt(a.dataset.page, 10), true, currentMode);
   });
   $('markLink').addEventListener('click', function (e) {
     e.preventDefault(); if (controller) controller.abort(); setBusy(false); history.pushState({}, '', '/');
@@ -274,8 +937,8 @@
         document.title = q.trim() + ' – Wadiya.com';
         setSearchModes(true);
         setActiveSearchMode(mode);
-        if (mode === 'images') {
-          search(q.trim(), page > 0 ? page : 1, false, 'images');
+        if (mode === 'images' || mode === 'videos' || mode === 'documents' || mode === 'news' || mode === 'finance' || mode === 'crypto') {
+          search(q.trim(), page > 0 ? page : 1, false, mode);
         } else {
           setStatus(mode.charAt(0).toUpperCase() + mode.slice(1) + ' search is coming next.', false);
           resultsEl.textContent = '';

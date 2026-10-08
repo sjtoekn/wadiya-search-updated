@@ -15,7 +15,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from ..admin.auth import AdminAuth
 from ..config.settings import Settings
 from ..indexer.fts5 import FTS5Indexer
+from ..indexer.books import BooksIndexer
+from ..search.books import DBBooksProvider
 from ..search.finance import AlphaVantageFinanceProvider
+from ..search.crypto import StaticCryptoProvider
 from ..ranking.bm25 import BM25Ranker
 from ..search.service import SearchService
 from ..storage.sqlite_store import SQLiteStorage
@@ -44,17 +47,28 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
     storage.init()
     indexer = indexer or FTS5Indexer(settings.index_path)
     indexer.init()
+
+    books_index_path = str(
+        Path(settings.index_path).with_name("wadiya_books_index.db")
+    )
+    books_indexer = BooksIndexer(books_index_path)
+    books_indexer.init()
+
     finance_provider = AlphaVantageFinanceProvider(
         settings.alpha_vantage_api_key,
         timeout=settings.request_timeout,
     )
+
+    crypto_provider = StaticCryptoProvider()
 
     service = SearchService(
         settings,
         storage,
         indexer,
         ranker or BM25Ranker(),
+        books_provider=DBBooksProvider(storage, books_indexer),
         finance_provider=finance_provider,
+        crypto_provider=crypto_provider,
     )
     auth = AdminAuth(settings)
     user_sessions = UserSessionManager(settings.secret_key, settings.user_session_max_age) if len(settings.secret_key) >= 32 else None
@@ -84,7 +98,19 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
                     settings.robots_cache_ttl,
                     settings.max_robots_bytes,
                 )
-                scheduler = ContinuousCrawler(settings, storage, indexer, preview_fetcher, robots)
+                books_index_path = str(
+                    Path(settings.index_path).with_name("wadiya_books_index.db")
+                )
+                books_indexer = BooksIndexer(books_index_path)
+
+                scheduler = ContinuousCrawler(
+                    settings,
+                    storage,
+                    indexer,
+                    preview_fetcher,
+                    robots,
+                    books_indexer=books_indexer,
+                )
                 for cycle in scheduler.run(seeds, interval=60):
                     print("background crawl cycle:", cycle.number, flush=True)
                 return
@@ -134,6 +160,51 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
     def search(q: str = "", page: str = "1", type: str = "web"):
         status, body = handlers.handle_search(service, q, page, type)
         return JSONResponse(body, status_code=status)
+
+    @app.get("/api/finance/history")
+    def finance_history(
+        symbol: str = "",
+        range: str = "1M",
+    ):
+        symbol = symbol.strip()
+        range_name = range.strip().upper()
+
+        allowed_ranges = {
+            "1D",
+            "1W",
+            "1M",
+            "3M",
+            "6M",
+            "1Y",
+            "5Y",
+            "MAX",
+        }
+
+        if not symbol:
+            return JSONResponse(
+                {"error": "symbol is required"},
+                status_code=400,
+            )
+
+        if range_name not in allowed_ranges:
+            return JSONResponse(
+                {"error": "invalid range"},
+                status_code=400,
+            )
+
+        points = finance_provider.history(
+            symbol,
+            range_name,
+        )
+
+        return JSONResponse(
+            {
+                "symbol": symbol,
+                "range": range_name,
+                "result_count": len(points),
+                "points": points,
+            }
+        )
 
     @app.get("/api/discovery")
     def discovery(domain: str = ""):
