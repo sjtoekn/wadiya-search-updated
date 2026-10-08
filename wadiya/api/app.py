@@ -15,6 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from ..admin.auth import AdminAuth
 from ..config.settings import Settings
 from ..indexer.fts5 import FTS5Indexer
+from ..search.finance import AlphaVantageFinanceProvider
 from ..ranking.bm25 import BM25Ranker
 from ..search.service import SearchService
 from ..storage.sqlite_store import SQLiteStorage
@@ -43,7 +44,18 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
     storage.init()
     indexer = indexer or FTS5Indexer(settings.index_path)
     indexer.init()
-    service = SearchService(settings, storage, indexer, ranker or BM25Ranker())
+    finance_provider = AlphaVantageFinanceProvider(
+        settings.alpha_vantage_api_key,
+        timeout=settings.request_timeout,
+    )
+
+    service = SearchService(
+        settings,
+        storage,
+        indexer,
+        ranker or BM25Ranker(),
+        finance_provider=finance_provider,
+    )
     auth = AdminAuth(settings)
     user_sessions = UserSessionManager(settings.secret_key, settings.user_session_max_age) if len(settings.secret_key) >= 32 else None
     submit_limiter = SubmitLimiter()

@@ -11,6 +11,7 @@ from ..query.parser import QueryError, parse_query
 from ..ranking.base import Ranker
 from ..storage.base import Storage
 from .books import BooksProvider, StaticBooksProvider
+from .finance import FinanceProvider
 from .snippets import make_snippet
 
 
@@ -26,9 +27,11 @@ class SearchService:
         indexer: Indexer,
         ranker: Ranker,
         books_provider: BooksProvider | None = None,
+        finance_provider: FinanceProvider | None = None,
     ):
         self.s, self.storage, self.indexer, self.ranker = settings, storage, indexer, ranker
         self.books_provider = books_provider or StaticBooksProvider()
+        self.finance_provider = finance_provider
 
     def search_books(self, raw_query, page: int = 1) -> dict:
         """Search Books through the configured Books provider."""
@@ -84,6 +87,69 @@ class SearchService:
             "total_pages": math.ceil(len(rows) / self.s.page_size),
             "result_count": len(rows),
             "result_count_exact": len(rows) < window,
+            "latency_ms": latency,
+            "results": results,
+        }
+
+    def search_finance(self, raw_query, page: int = 1) -> dict:
+        """Search finance data through the configured Finance provider."""
+        t0 = time.perf_counter()
+
+        if not isinstance(raw_query, str):
+            raise InvalidSearchRequest("query must be a string")
+
+        raw = raw_query.strip()
+        if not raw:
+            raise InvalidSearchRequest("query is required")
+
+        try:
+            q = parse_query(raw, self.s.max_query_length, self.s.max_query_terms)
+        except QueryError as e:
+            raise InvalidSearchRequest(str(e))
+
+        if not isinstance(page, int) or page < 1 or page > self.s.max_pages:
+            raise InvalidSearchRequest(f"page must be between 1 and {self.s.max_pages}")
+
+        if self.finance_provider is None:
+            rows = []
+        else:
+            window = self.s.page_size * self.s.max_pages
+            rows = self.finance_provider.search(
+                q.raw.strip(),
+                limit=window,
+                offset=0,
+            )
+
+        start = (page - 1) * self.s.page_size
+        page_rows = rows[start:start + self.s.page_size]
+
+        results = [
+            {
+                "symbol": item.symbol,
+                "name": item.name,
+                "type": item.type,
+                "region": item.region,
+                "market_open": item.market_open,
+                "market_close": item.market_close,
+                "timezone": item.timezone,
+                "currency": item.currency,
+                "match_score": item.match_score,
+                "price": item.price,
+                "change": item.change,
+                "change_percent": item.change_percent,
+            }
+            for item in page_rows
+        ]
+
+        latency = round((time.perf_counter() - t0) * 1000, 2)
+
+        return {
+            "query": raw,
+            "page": page,
+            "page_size": self.s.page_size,
+            "total_pages": math.ceil(len(rows) / self.s.page_size),
+            "result_count": len(rows),
+            "result_count_exact": len(rows) < self.s.page_size * self.s.max_pages,
             "latency_ms": latency,
             "results": results,
         }

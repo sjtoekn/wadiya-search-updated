@@ -39,6 +39,7 @@ def _load_dotenv() -> None:
             "WADIYA_GOOGLE_CLIENT_ID",
             "WADIYA_GOOGLE_CLIENT_SECRET",
             "WADIYA_GOOGLE_REDIRECT_URI",
+            "WADIYA_ALPHA_VANTAGE_API_KEY",
         }:
             continue
 
@@ -63,6 +64,7 @@ class Settings:
     google_client_id: str = ""
     google_client_secret: str = ""
     google_redirect_uri: str = ""
+    alpha_vantage_api_key: str = ""
     # --- storage ---
     db_path: str = "data/wadiya.db"
     index_path: str = "data/wadiya_index.db"
@@ -132,6 +134,7 @@ class Settings:
             google_client_id=e("WADIYA_GOOGLE_CLIENT_ID", d.google_client_id),
             google_client_secret=e("WADIYA_GOOGLE_CLIENT_SECRET", d.google_client_secret),
             google_redirect_uri=e("WADIYA_GOOGLE_REDIRECT_URI", d.google_redirect_uri),
+            alpha_vantage_api_key=e("WADIYA_ALPHA_VANTAGE_API_KEY", ""),
             user_agent=e("WADIYA_USER_AGENT", d.user_agent),
             admin_password_hash=e("WADIYA_ADMIN_PASSWORD_HASH", ""),
             user_session_max_age=int(e("WADIYA_USER_SESSION_MAX_AGE", "28800")),
