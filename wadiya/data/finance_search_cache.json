@@ -1,0 +1,21 @@
+{
+  "msft": {
+    "saved_at": 1791479703.15328,
+    "results": [
+      {
+        "symbol": "MSFT",
+        "name": "Microsoft Corporation",
+        "type": "Equity",
+        "region": "United States",
+        "market_open": "09:30",
+        "market_close": "16:00",
+        "timezone": "UTC-04",
+        "currency": "USD",
+        "match_score": 1.0,
+        "price": 529.76,
+        "change": 0.46,
+        "change_percent": "0.0869%"
+      }
+    ]
+  }
+}
