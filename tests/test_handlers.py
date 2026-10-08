@@ -22,6 +22,34 @@ class HandlerTests(SearchStackCase):
 
         self.assertEqual(body["results"][0]["canonical_url"], "https://e.org/1")
 
+    def test_books_search_uses_books_pipeline(self):
+        status, body = handlers.handle_search(
+            self.svc,
+            "python",
+            "1",
+            search_type="books",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["result_count"], 1)
+        self.assertEqual(body["results"][0]["title"], "Python Programming")
+        self.assertEqual(body["results"][0]["author"], ["Example Author"])
+        self.assertEqual(
+            set(body["results"][0]),
+            {
+                "title",
+                "author",
+                "isbn",
+                "cover_url",
+                "publisher",
+                "published_at",
+                "description",
+                "url",
+                "language",
+                "score",
+            },
+        )
+
     def test_page_ok_returns_public_fields(self):
         self.seed()
         status, body = handlers.handle_page(self.storage, "https://e.org/1")

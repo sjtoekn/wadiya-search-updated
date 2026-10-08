@@ -36,6 +36,9 @@ def handle_search(service, q, page_raw, search_type="web") -> tuple:
         if search_type == "images":
             return 200, service.search_images(q, page)
 
+        if search_type == "books":
+            return 200, service.search_books(q, page)
+
         return error(400, "unsupported search type")
     except InvalidSearchRequest as e:
         return error(400, str(e))

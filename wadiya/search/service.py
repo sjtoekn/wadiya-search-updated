@@ -10,6 +10,7 @@ from ..indexer.base import Indexer
 from ..query.parser import QueryError, parse_query
 from ..ranking.base import Ranker
 from ..storage.base import Storage
+from .books import BooksProvider, StaticBooksProvider
 from .snippets import make_snippet
 
 
@@ -18,8 +19,74 @@ class InvalidSearchRequest(ValueError):
 
 
 class SearchService:
-    def __init__(self, settings, storage: Storage, indexer: Indexer, ranker: Ranker):
+    def __init__(
+        self,
+        settings,
+        storage: Storage,
+        indexer: Indexer,
+        ranker: Ranker,
+        books_provider: BooksProvider | None = None,
+    ):
         self.s, self.storage, self.indexer, self.ranker = settings, storage, indexer, ranker
+        self.books_provider = books_provider or StaticBooksProvider()
+
+    def search_books(self, raw_query, page: int = 1) -> dict:
+        """Search Books through the configured Books provider."""
+        t0 = time.perf_counter()
+
+        if not isinstance(raw_query, str):
+            raise InvalidSearchRequest("query must be a string")
+
+        raw = raw_query.strip()
+        if not raw:
+            raise InvalidSearchRequest("query is required")
+
+        try:
+            q = parse_query(raw, self.s.max_query_length, self.s.max_query_terms)
+        except QueryError as e:
+            raise InvalidSearchRequest(str(e))
+
+        if not isinstance(page, int) or page < 1 or page > self.s.max_pages:
+            raise InvalidSearchRequest(f"page must be between 1 and {self.s.max_pages}")
+
+        window = self.s.page_size * self.s.max_pages
+        rows = self.books_provider.search(
+            q.raw.strip(),
+            limit=window,
+            offset=0,
+        )
+
+        start = (page - 1) * self.s.page_size
+        page_rows = rows[start:start + self.s.page_size]
+
+        results = [
+            {
+                "title": book.title,
+                "author": list(book.author),
+                "isbn": book.isbn,
+                "cover_url": book.cover_url,
+                "publisher": book.publisher,
+                "published_at": book.published_at,
+                "description": book.description,
+                "url": book.url,
+                "language": book.language,
+                "score": book.score,
+            }
+            for book in page_rows
+        ]
+
+        latency = round((time.perf_counter() - t0) * 1000, 2)
+
+        return {
+            "query": raw,
+            "page": page,
+            "page_size": self.s.page_size,
+            "total_pages": math.ceil(len(rows) / self.s.page_size),
+            "result_count": len(rows),
+            "result_count_exact": len(rows) < window,
+            "latency_ms": latency,
+            "results": results,
+        }
 
     def search_images(self, raw_query, page: int = 1) -> dict:
         """Search persisted page images without changing the normal web-search path."""
