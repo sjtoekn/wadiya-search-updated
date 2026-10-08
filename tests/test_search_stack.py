@@ -223,7 +223,32 @@ class ServiceTests(SearchStackCase):
         r = self.svc.search("unique0")
         self.assertEqual(set(r), {"query", "page", "page_size", "total_pages", "result_count", "result_count_exact",
                                   "match", "latency_ms", "results"})
-        self.assertEqual(set(r["results"][0]), {"title", "url", "domain", "snippet"})
+        self.assertEqual(
+            set(r["results"][0]),
+            {
+                "title",
+                "url",
+                "canonical_url",
+                "display_url",
+                "domain",
+                "snippet",
+                "favicon",
+                "language",
+                "country",
+                "published_at",
+                "updated_at",
+                "source_type",
+                "score",
+            },
+        )
+        result = r["results"][0]
+        self.assertEqual(result["source_type"], "web")
+        self.assertEqual(result["url"], result["canonical_url"])
+        self.assertEqual(result["display_url"], result["canonical_url"])
+        self.assertIsNone(result["favicon"])
+        self.assertIsNone(result["country"])
+        self.assertIsNone(result["published_at"])
+        self.assertIsInstance(result["score"], (int, float))
         self.assertIn("unique0", r["results"][0]["snippet"])
         self.assertEqual((r["result_count"], r["match"]), (1, "all"))
         self.assertGreaterEqual(r["latency_ms"], 0)

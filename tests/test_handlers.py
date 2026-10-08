@@ -17,8 +17,10 @@ class HandlerTests(SearchStackCase):
         status, body = handlers.handle_search(self.svc, "wadi", "1")
         self.assertEqual(status, 200)
         flat = repr(body)
-        for secret in ("content_hash", "indexed_at", "canonical_url", self.tmp, ".db", "rowid", "doc_id"):
+        for secret in ("content_hash", "indexed_at", self.tmp, ".db", "rowid", "doc_id"):
             self.assertNotIn(secret, flat)
+
+        self.assertEqual(body["results"][0]["canonical_url"], "https://e.org/1")
 
     def test_page_ok_returns_public_fields(self):
         self.seed()

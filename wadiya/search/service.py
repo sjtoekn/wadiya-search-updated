@@ -100,10 +100,23 @@ class SearchService:
             d = docs.get(h.doc_id)
             if d is None or d.status != "ok":   # index briefly out of sync / doc deactivated: never show it
                 continue
-            results.append({"title": d.title or d.url, "url": d.url, "domain": d.domain,
-                            "snippet": "" if d.nosnippet else make_snippet(
-                                d.content, q.all_terms, fallback=d.description
-                            )})
+            results.append({
+                "title": d.title or d.url,
+                "url": d.url,
+                "canonical_url": d.canonical_url,
+                "display_url": d.canonical_url or d.url,
+                "domain": d.domain,
+                "snippet": "" if d.nosnippet else make_snippet(
+                    d.content, q.all_terms, fallback=d.description
+                ),
+                "favicon": None,
+                "language": d.language,
+                "country": None,
+                "published_at": None,
+                "updated_at": d.updated_at,
+                "source_type": "web",
+                "score": h.score,
+            })
         reachable = min(res.total, window)
         latency = round((time.perf_counter() - t0) * 1000, 2)
         try:
