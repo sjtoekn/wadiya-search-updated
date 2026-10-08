@@ -18,7 +18,7 @@ from ..indexer.fts5 import FTS5Indexer
 from ..indexer.books import BooksIndexer
 from ..search.books import DBBooksProvider
 from ..search.finance import AlphaVantageFinanceProvider
-from ..search.crypto import StaticCryptoProvider
+from ..search.crypto import SQLiteCryptoProvider, seed_default_crypto_assets
 from ..ranking.bm25 import BM25Ranker
 from ..search.service import SearchService
 from ..storage.sqlite_store import SQLiteStorage
@@ -59,7 +59,8 @@ def create_app(settings=None, storage=None, indexer=None, ranker=None, fetcher=N
         timeout=settings.request_timeout,
     )
 
-    crypto_provider = StaticCryptoProvider()
+    seed_default_crypto_assets(storage)
+    crypto_provider = SQLiteCryptoProvider(storage)
 
     service = SearchService(
         settings,
