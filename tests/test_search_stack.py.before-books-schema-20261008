@@ -1,0 +1,496 @@
+import math
+
+from tests.helpers import TempDirCase, make_doc
+from wadiya.indexer.fts5 import FTS5Indexer
+from wadiya.pipeline import index_pending, rebuild_index
+from wadiya.query.parser import parse_query
+from wadiya.ranking.bm25 import BM25Ranker
+from wadiya.search.service import InvalidSearchRequest, SearchService
+
+
+class SearchStackCase(TempDirCase):
+    def setUp(self):
+        super().setUp()
+        self.indexer = FTS5Indexer(self.settings.index_path)
+        self.indexer.init()
+        self.ranker = BM25Ranker()
+        self.svc = SearchService(self.settings, self.storage, self.indexer, self.ranker)
+
+    def add(self, **kw):
+        r = self.storage.save_document(make_doc(**kw)); return r.doc_id
+
+    def build(self):
+        index_pending(self.storage, self.indexer)
+
+
+class MapsSearchTests(SearchStackCase):
+    def test_search_maps_returns_structured_locations(self):
+        doc_id = self.add(
+            url="https://example.org/toronto-place",
+            title="Toronto Place",
+            content="Toronto place guide",
+        )
+
+        doc = self.storage.get_documents([doc_id])[doc_id]
+        doc.locations = [
+            {
+                "latitude": 43.6532,
+                "longitude": -79.3832,
+                "address": "123 Main St",
+                "city": "Toronto",
+                "region": "ON",
+                "country": "CA",
+                "source": "json-ld",
+            }
+        ]
+        self.storage.save_document(doc)
+        self.build()
+
+        result = self.svc.search_maps("Toronto")
+
+        self.assertEqual(result["result_count"], 1)
+        self.assertEqual(result["results"][0]["title"], "Toronto Place")
+        self.assertEqual(result["results"][0]["latitude"], 43.6532)
+        self.assertEqual(result["results"][0]["longitude"], -79.3832)
+        self.assertEqual(result["results"][0]["city"], "Toronto")
+
+class IndexerTests(SearchStackCase):
+    def test_index_and_search(self):
+        a = self.add(url="https://e.org/1", title="Wadi guide", content="A wadi is a dry riverbed.")
+        self.add(url="https://e.org/2", title="Cooking", content="Pasta and sauce recipes.")
+        self.build()
+        self.assertEqual(self.indexer.count(), 2)
+        res = self.indexer.search(parse_query("wadi"), 10)
+        self.assertEqual([h.doc_id for h in res.hits], [a])
+        self.assertEqual(res.total, 1)
+        self.assertEqual(self.storage.documents_needing_index(10), [])
+
+    def test_typo_tolerance_edit_distance_one(self):
+        self.add(
+            url="https://e.org/python",
+            title="Python Guide",
+            content="python programming guide",
+        )
+        self.build()
+
+        r = self.svc.search("pyhton")
+
+        self.assertEqual(r["result_count"], 1)
+        self.assertEqual(r["results"][0]["url"], "https://e.org/python")
+
+    def test_stemming_phrase_and_and_or(self):
+        self.add(url="https://e.org/1", content="rivers run through the dry riverbed slowly")
+        self.add(url="https://e.org/2", content="a dry spell and a riverbed fish")
+        self.build()
+        s = lambda q, all_=True: {h.url for h in self.indexer.search(parse_query(q), 10, match_all=all_).hits}
+        self.assertEqual(s("river"), {"https://e.org/1"})                       # porter stemming
+        self.assertEqual(s('"dry riverbed"'), {"https://e.org/1"})              # phrase
+        self.assertEqual(s("dry riverbed"), {"https://e.org/1", "https://e.org/2"})   # both contain both terms
+        self.assertEqual(len(s("fish riverbed dry")), 1)                         # AND
+        self.assertEqual(len(s("fish pasta", all_=False)), 1)                    # OR
+
+    def test_query_operators_parse(self):
+        q = parse_query('python "fast api" -django site:example.com intitle:guide filetype:pdf')
+
+        self.assertEqual(q.terms, ("python",))
+        self.assertEqual(q.phrases, (("fast", "api"),))
+        self.assertEqual(q.excluded_terms, ("django",))
+        self.assertEqual(q.sites, ("example.com",))
+        self.assertEqual(q.title_terms, ("guide",))
+        self.assertEqual(q.filetypes, ("pdf",))
+
+    def test_site_operator_filters_domain(self):
+        self.add(url="https://example.com/python", domain="example.com", content="python")
+        self.add(url="https://other.com/python", domain="other.com", content="python")
+        self.build()
+
+        r = self.svc.search("python site:example.com")
+        self.assertEqual([x["url"] for x in r["results"]], ["https://example.com/python"])
+
+    def test_exclude_operator_filters_terms(self):
+        self.add(url="https://e.org/python", content="python guide")
+        self.add(url="https://e.org/django", content="python django guide")
+        self.build()
+
+        r = self.svc.search("python -django")
+        self.assertEqual([x["url"] for x in r["results"]], ["https://e.org/python"])
+
+    def test_intitle_operator_filters_title(self):
+        self.add(url="https://e.org/title", title="Python Guide", content="general")
+        self.add(url="https://e.org/body", title="General Guide", content="python")
+        self.build()
+
+        r = self.svc.search("intitle:python")
+        self.assertEqual([x["url"] for x in r["results"]], ["https://e.org/title"])
+
+    def test_filetype_operator_filters_url(self):
+        self.add(url="https://e.org/guide.pdf", content="python guide")
+        self.add(url="https://e.org/guide.html", content="python guide")
+        self.build()
+
+        r = self.svc.search("python filetype:pdf")
+        self.assertEqual([x["url"] for x in r["results"]], ["https://e.org/guide.pdf"])
+
+
+    def test_reindex_replaces_not_duplicates(self):
+        i = self.add(content="original text unique1")
+        self.build()
+        self.storage.save_document(make_doc(content="replacement text unique2"))
+        self.build()
+        self.assertEqual(self.indexer.count(), 1)
+        self.assertEqual(self.indexer.search(parse_query("unique1"), 5).total, 0)
+        self.assertEqual(self.indexer.search(parse_query("unique2"), 5).total, 1)
+
+    def test_rebuild_and_remove(self):
+        a = self.add(url="https://e.org/1", content="kiwi"); self.add(url="https://e.org/2", content="kiwi fruit")
+        self.build()
+        self.assertEqual(rebuild_index(self.storage, self.indexer), 2)
+        self.indexer.remove([a])
+        self.assertEqual(self.indexer.count(), 1)
+
+    def test_malicious_query_text_is_safe(self):
+        self.add(content="hello world")
+        self.build()
+        for q in ['"', "AND OR NOT", "hello NEAR/2 world", "col:hello", "hello* ^world", "') DROP TABLE docs_fts;--", "(((("]:
+            try:
+                self.indexer.search(parse_query(q), 5)
+            except ValueError:
+                pass   # parser rejection is fine; an exception from SQLite is not (would be OperationalError)
+        self.assertEqual(self.indexer.count(), 1)
+
+    def test_info(self):
+        info = self.indexer.info()
+        self.assertEqual(info["engine"], "sqlite-fts5")
+        self.assertNotIn("path", info)
+
+
+class RankingTests(SearchStackCase):
+    def test_title_beats_body_and_bm25_orders(self):
+        body = self.add(url="https://e.org/body", title="Misc notes", content="the wadi appears once in this long text " + "filler " * 50)
+        title = self.add(url="https://e.org/title", title="Wadi", content="short page")
+        many = self.add(url="https://e.org/many", title="Other", content="wadi wadi wadi wadi " + "filler " * 5)
+        self.build()
+        q = parse_query("wadi")
+        ranked = self.ranker.rank(q, self.indexer.search(q, 10, weights=self.ranker.field_weights).hits)
+        order = [h.doc_id for h in ranked]
+        self.assertEqual(order[0], title)                       # title field weighted 5x
+        self.assertLess(order.index(many), order.index(body))   # higher tf / shorter doc beats a single mention
+        self.assertTrue(all(ranked[i].score >= ranked[i + 1].score for i in range(len(ranked) - 1)))
+
+    def test_url_and_domain_fields_are_searchable_and_weighted(self):
+        url_hit = self.add(
+            url="https://example.org/wadi",
+            domain="example.org",
+            title="Unrelated page",
+            content="short page",
+        )
+        body_hit = self.add(
+            url="https://example.org/body",
+            domain="example.org",
+            title="Unrelated page",
+            content="wadi",
+        )
+        self.build()
+
+        q = parse_query("wadi")
+        ranked = self.ranker.rank(
+            q,
+            self.indexer.search(
+                q,
+                10,
+                weights=self.ranker.field_weights,
+            ).hits,
+        )
+
+        order = [h.doc_id for h in ranked]
+
+        self.assertIn(url_hit, order)
+        self.assertIn(body_hit, order)
+        self.assertLess(order.index(url_hit), order.index(body_hit))
+
+    def test_close_terms_rank_above_far_terms(self):
+        close = self.add(
+            url="https://e.org/close",
+            title="Other",
+            content="alpha beta useful content",
+        )
+        far = self.add(
+            url="https://e.org/far",
+            title="Other",
+            content="alpha " + "filler " * 40 + "beta",
+        )
+        self.build()
+
+        q = parse_query("alpha beta")
+        ranked = self.ranker.rank(
+            q,
+            self.indexer.search(
+                q,
+                10,
+                weights=self.ranker.field_weights,
+            ).hits,
+        )
+
+        order = [h.doc_id for h in ranked]
+        self.assertEqual(order[0], close)
+
+    def test_deterministic_ties(self):
+        for i in range(3):
+            self.add(url=f"https://e.org/{i}", content=f"same words tie{i % 1}", chash=f"h{i}")
+        self.build()
+        q = parse_query("same")
+        ids = [h.doc_id for h in self.ranker.rank(q, self.indexer.search(q, 10).hits)]
+        self.assertEqual(ids, sorted(ids))
+
+
+class ServiceTests(SearchStackCase):
+    def seed(self, n):
+        for i in range(n):
+            self.add(url=f"https://e.org/{i}", title=f"Doc {i}", content=f"common term plus unique{i} body text", chash=f"h{i}")
+        self.build()
+
+    def test_news_search_only_returns_feed_discovered_documents(self):
+        news_id = self.add(
+            url="https://news.example/python",
+            title="Python News",
+            content="Latest python programming news and updates.",
+            chash="news-python",
+        )
+        normal_id = self.add(
+            url="https://example.org/python",
+            title="Python Guide",
+            content="A normal python programming guide.",
+            chash="normal-python",
+        )
+
+        self.storage.register_news_candidate(
+            "https://news.example/python",
+            "https://news.example/feed.xml",
+            "rss",
+        )
+
+        self.assertEqual(
+            self.storage.search_news_document_ids(),
+            [news_id],
+        )
+
+        self.build()
+
+        r = self.svc.search_news("python")
+
+        self.assertEqual(r["result_count"], 1)
+        self.assertEqual(
+            [x["url"] for x in r["results"]],
+            ["https://news.example/python"],
+        )
+        self.assertNotEqual(
+            r["results"][0]["url"],
+            "https://example.org/python",
+        )
+        self.assertNotEqual(news_id, normal_id)
+
+    def test_response_shape_and_snippet(self):
+        self.seed(1)
+        r = self.svc.search("unique0")
+        self.assertEqual(set(r), {"query", "page", "page_size", "total_pages", "result_count", "result_count_exact",
+                                  "match", "latency_ms", "results"})
+        self.assertEqual(
+            set(r["results"][0]),
+            {
+                "title",
+                "url",
+                "canonical_url",
+                "display_url",
+                "domain",
+                "snippet",
+                "favicon",
+                "language",
+                "country",
+                "published_at",
+                "updated_at",
+                "source_type",
+                "score",
+            },
+        )
+        result = r["results"][0]
+        self.assertEqual(result["source_type"], "web")
+        self.assertEqual(result["url"], result["canonical_url"])
+        self.assertEqual(result["display_url"], result["canonical_url"])
+        self.assertIsNone(result["favicon"])
+        self.assertIsNone(result["country"])
+        self.assertIsNone(result["published_at"])
+        self.assertIsInstance(result["score"], (int, float))
+        self.assertIn("unique0", r["results"][0]["snippet"])
+        self.assertEqual((r["result_count"], r["match"]), (1, "all"))
+        self.assertGreaterEqual(r["latency_ms"], 0)
+
+    def test_pagination(self):
+        self.seed(25)
+        p1, p2, p3 = (self.svc.search("common", p) for p in (1, 2, 3))
+        self.assertEqual((len(p1["results"]), len(p2["results"]), len(p3["results"])), (10, 10, 5))
+        self.assertEqual(p1["total_pages"], 3)
+        urls = [x["url"] for p in (p1, p2, p3) for x in p["results"]]
+        self.assertEqual(len(set(urls)), 25)                    # no overlap between pages
+        self.assertEqual(self.svc.search("common", 4)["results"], [])   # beyond last page: empty, not an error
+
+    def test_pagination_limits(self):
+        self.seed(1)
+        for bad in (0, -1, self.settings.max_pages + 1, "2", None, 1.5):
+            with self.assertRaises(InvalidSearchRequest, msg=repr(bad)):
+                self.svc.search("common", bad)
+
+    def test_or_fallback(self):
+        self.seed(2)
+        r = self.svc.search("unique0 nonexistentword")
+        self.assertEqual((r["match"], r["result_count"]), ("any", 1))
+
+    def test_all_terms_are_preferred_before_any_term_fallback(self):
+        self.add(
+            url="https://e.org/all",
+            title="All terms",
+            content="alpha beta common",
+            chash="all",
+        )
+        self.add(
+            url="https://e.org/partial",
+            title="Partial terms",
+            content="alpha common",
+            chash="partial",
+        )
+        self.build()
+
+        r = self.svc.search("alpha beta")
+
+        self.assertEqual(r["match"], "all")
+        self.assertEqual(r["result_count"], 1)
+        self.assertEqual([x["url"] for x in r["results"]], ["https://e.org/all"])
+
+    def test_empty_and_invalid_queries(self):
+        for q in ["", "   ", "!!!", "x" * 500, None]:
+            with self.assertRaises(InvalidSearchRequest):
+                self.svc.search(q)
+
+    def test_no_results_and_logging(self):
+        self.seed(1)
+        r = self.svc.search("zzzzqqq")
+        self.assertEqual((r["result_count"], r["results"], r["total_pages"]), (0, [], 0))
+        self.assertEqual(self.storage.search_stats()["search_count"], 1)
+
+        recent = self.storage.recent_queries()
+        self.assertEqual(len(recent), 1)
+        self.assertEqual(recent[0]["result_count"], 0)
+        self.assertEqual(len(recent[0]["query"]), 64)
+
+    def test_index_storage_desync_is_tolerated(self):
+        self.seed(2)
+        self.indexer.index([__import__("wadiya.indexer.base", fromlist=["x"]).IndexDocument(999, "https://ghost/", "ghost", "ghost common", "", "", "common")])
+        r = self.svc.search("common")
+        self.assertTrue(all(x["domain"] != "ghost" for x in r["results"]))
+
+
+class QueryOperatorRegressionTests(SearchStackCase):
+    def test_site_operator_matches_apex_www_and_subdomains(self):
+        self.add(
+            url="https://x.com/home",
+            domain="x.com",
+            content="target",
+            chash="site-x-apex",
+        )
+        self.add(
+            url="https://www.x.com/home",
+            domain="www.x.com",
+            content="target",
+            chash="site-x-www",
+        )
+        self.add(
+            url="https://blog.x.com/post",
+            domain="blog.x.com",
+            content="target",
+            chash="site-x-blog",
+        )
+        self.add(
+            url="https://notx.com/home",
+            domain="notx.com",
+            content="target",
+            chash="site-notx",
+        )
+        self.build()
+
+        r = self.svc.search("site:x.com")
+
+        self.assertEqual(
+            {x["url"] for x in r["results"]},
+            {
+                "https://x.com/home",
+                "https://www.x.com/home",
+                "https://blog.x.com/post",
+            },
+        )
+
+    def test_negative_only_query_does_not_create_empty_fts_match(self):
+        self.add(
+            url="https://e.org/keep",
+            content="python guide",
+        )
+        self.add(
+            url="https://e.org/remove",
+            content="django guide",
+        )
+        self.build()
+
+        r = self.svc.search("-django")
+
+        self.assertEqual(
+            [x["url"] for x in r["results"]],
+            ["https://e.org/keep"],
+        )
+
+    def test_site_only_and_negative_only_can_be_combined(self):
+        self.add(
+            url="https://x.com/keep",
+            domain="x.com",
+            content="python guide",
+        )
+        self.add(
+            url="https://blog.x.com/remove",
+            domain="blog.x.com",
+            content="python django guide",
+        )
+        self.add(
+            url="https://other.com/keep",
+            domain="other.com",
+            content="python guide",
+        )
+        self.build()
+
+        r = self.svc.search("site:x.com -django")
+
+        self.assertEqual(
+            [x["url"] for x in r["results"]],
+            ["https://x.com/keep"],
+        )
+
+    def test_filetype_uses_url_extension_not_content(self):
+        self.add(
+            url="https://e.org/real.pdf",
+            content="ordinary python guide",
+        )
+        self.add(
+            url="https://e.org/page.html",
+            content="this text mentions a .pdf file",
+        )
+        self.add(
+            url="https://e.org/download.pdf?version=2",
+            content="another guide",
+        )
+        self.build()
+
+        r = self.svc.search("filetype:pdf")
+
+        self.assertEqual(
+            {x["url"] for x in r["results"]},
+            {
+                "https://e.org/real.pdf",
+                "https://e.org/download.pdf?version=2",
+            },
+        )

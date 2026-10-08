@@ -1,3 +1,4 @@
+from pathlib import Path
 import math
 
 from tests.helpers import TempDirCase, make_doc
@@ -22,6 +23,37 @@ class SearchStackCase(TempDirCase):
     def build(self):
         index_pending(self.storage, self.indexer)
 
+
+class MapsSearchTests(SearchStackCase):
+    def test_search_maps_returns_structured_locations(self):
+        doc_id = self.add(
+            url="https://example.org/toronto-place",
+            title="Toronto Place",
+            content="Toronto place guide",
+        )
+
+        doc = self.storage.get_documents([doc_id])[doc_id]
+        doc.locations = [
+            {
+                "latitude": 43.6532,
+                "longitude": -79.3832,
+                "address": "123 Main St",
+                "city": "Toronto",
+                "region": "ON",
+                "country": "CA",
+                "source": "json-ld",
+            }
+        ]
+        self.storage.save_document(doc)
+        self.build()
+
+        result = self.svc.search_maps("Toronto")
+
+        self.assertEqual(result["result_count"], 1)
+        self.assertEqual(result["results"][0]["title"], "Toronto Place")
+        self.assertEqual(result["results"][0]["latitude"], 43.6532)
+        self.assertEqual(result["results"][0]["longitude"], -79.3832)
+        self.assertEqual(result["results"][0]["city"], "Toronto")
 
 class IndexerTests(SearchStackCase):
     def test_index_and_search(self):
@@ -217,6 +249,68 @@ class ServiceTests(SearchStackCase):
         for i in range(n):
             self.add(url=f"https://e.org/{i}", title=f"Doc {i}", content=f"common term plus unique{i} body text", chash=f"h{i}")
         self.build()
+
+    def test_news_search_only_returns_feed_discovered_documents(self):
+        news_id = self.add(
+            url="https://news.example/python",
+            title="Python News",
+            content="Latest python programming news and updates.",
+            chash="news-python",
+        )
+        normal_id = self.add(
+            url="https://example.org/python",
+            title="Python Guide",
+            content="A normal python programming guide.",
+            chash="normal-python",
+        )
+
+        self.storage.register_news_candidate(
+            "https://news.example/python",
+            "https://news.example/feed.xml",
+            "rss",
+        )
+
+        self.assertEqual(
+            self.storage.search_news_document_ids(),
+            [news_id],
+        )
+
+        self.build()
+
+        r = self.svc.search_news("python")
+
+        self.assertEqual(r["result_count"], 1)
+        self.assertEqual(
+            [x["url"] for x in r["results"]],
+            ["https://news.example/python"],
+        )
+        self.assertNotEqual(
+            r["results"][0]["url"],
+            "https://example.org/python",
+        )
+        self.assertNotEqual(news_id, normal_id)
+
+    def test_books_result_schema(self):
+        result = self.svc.search_books("python")["results"][0]
+
+        self.assertEqual(
+            set(result),
+            {
+                "title",
+                "author",
+                "isbn",
+                "cover_url",
+                "publisher",
+                "published_at",
+                "description",
+                "url",
+                "language",
+                "score",
+            },
+        )
+        self.assertIsInstance(result["title"], str)
+        self.assertIsInstance(result["author"], list)
+        self.assertIsInstance(result["score"], (int, float))
 
     def test_response_shape_and_snippet(self):
         self.seed(1)
@@ -423,3 +517,120 @@ class QueryOperatorRegressionTests(SearchStackCase):
                 "https://e.org/download.pdf?version=2",
             },
         )
+
+
+class BooksIndexerTests(TempDirCase):
+    def test_books_index_searches_title_author_isbn(self):
+        from wadiya.indexer.books import BooksIndexer
+
+        indexer = BooksIndexer(str(Path(self.tmp) / "books_index.db"))
+        indexer.init()
+
+        indexer.index([
+            {
+                "id": 1,
+                "title": "Python Programming",
+                "author": ["Example Author", "Second Author"],
+                "isbn": "9781234567890",
+                "description": "A Python programming book.",
+            },
+        ])
+
+        hits = indexer.search("Python", limit=10)
+        self.assertEqual(hits.total, 1)
+        self.assertEqual(hits.hits[0]["title"], "Python Programming")
+
+        hits = indexer.search("Example Author", limit=10)
+        self.assertEqual(hits.total, 1)
+
+        hits = indexer.search("9781234567890", limit=10)
+        self.assertEqual(hits.total, 1)
+
+
+class BooksPipelineTests(TempDirCase):
+    def test_sync_books_index_indexes_stored_books(self):
+        from wadiya.indexer.books import BooksIndexer
+        from wadiya.pipeline import sync_books_index
+        from wadiya.storage.base import Book
+
+        self.storage.save_book(
+            Book(
+                id=None,
+                title="Python Programming",
+                author=["Example Author"],
+                isbn="9781234567890",
+                cover_url=None,
+                publisher="Example Press",
+                published_at="2026-01-01",
+                description="A Python programming book.",
+                url="https://example.org/books/python",
+                language="en",
+                score=0.0,
+                source_url="https://example.org/book",
+                crawled_at="2026-01-01T00:00:00+00:00",
+                updated_at="2026-01-01T00:00:00+00:00",
+            )
+        )
+
+        indexer = BooksIndexer(str(Path(self.tmp) / "books_index.db"))
+        indexer.init()
+
+        indexed = sync_books_index(self.storage, indexer)
+
+        self.assertEqual(indexed, 1)
+
+        hits = indexer.search("Python", limit=10)
+        self.assertEqual(hits.total, 1)
+        self.assertEqual(hits.hits[0]["title"], "Python Programming")
+
+        hits = indexer.search("Example Author", limit=10)
+        self.assertEqual(hits.total, 1)
+
+        hits = indexer.search("9781234567890", limit=10)
+        self.assertEqual(hits.total, 1)
+
+
+class BooksProviderTests(TempDirCase):
+    def test_db_books_provider_returns_indexed_book_metadata(self):
+        from wadiya.indexer.books import BooksIndexer
+        from wadiya.pipeline import sync_books_index
+        from wadiya.search.books import DBBooksProvider
+        from wadiya.storage.base import Book
+
+        self.storage.save_book(
+            Book(
+                id=None,
+                title="Python Programming",
+                author=["Example Author"],
+                isbn="9781234567890",
+                cover_url="https://example.org/python.jpg",
+                publisher="Example Press",
+                published_at="2026-01-01",
+                description="A Python programming book.",
+                url="https://example.org/books/python",
+                language="en",
+                score=0.0,
+                source_url="https://example.org/book",
+                crawled_at="2026-01-01T00:00:00+00:00",
+                updated_at="2026-01-01T00:00:00+00:00",
+            )
+        )
+
+        indexer = BooksIndexer(str(Path(self.tmp) / "books_index.db"))
+        indexer.init()
+        sync_books_index(self.storage, indexer)
+
+        provider = DBBooksProvider(self.storage, indexer)
+
+        results = provider.search("Python", limit=10)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].title, "Python Programming")
+        self.assertEqual(results[0].author, ["Example Author"])
+        self.assertEqual(results[0].isbn, "9781234567890")
+        self.assertEqual(
+            results[0].cover_url,
+            "https://example.org/python.jpg",
+        )
+        self.assertEqual(results[0].publisher, "Example Press")
+        self.assertEqual(results[0].url, "https://example.org/books/python")

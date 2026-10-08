@@ -30,6 +30,49 @@ class Document:
     fail_count: int = 0           # consecutive failed crawls (reset on success)
     nosnippet: bool = False       # publisher requests that search results omit the snippet
     images: list = None           # image candidates extracted from the crawled page
+    videos: list = None           # video candidates extracted from the crawled page
+    locations: list = None        # structured map locations extracted from the crawled page
+
+
+@dataclass
+class Book:
+    id: Optional[int]
+    title: str
+    author: list[str]
+    isbn: Optional[str]
+    cover_url: Optional[str]
+    publisher: Optional[str]
+    published_at: Optional[str]
+    description: Optional[str]
+    url: str
+    language: Optional[str]
+    score: float
+    source_url: Optional[str]
+    crawled_at: str
+    updated_at: str
+
+
+@dataclass
+class CryptoAsset:
+    id: Optional[int]
+    symbol: str
+    name: str
+    asset_type: str
+    rank: Optional[int]
+    currency: str
+    updated_at: str
+
+
+@dataclass
+class CryptoQuote:
+    id: Optional[int]
+    symbol: str
+    price: Optional[float]
+    change: Optional[float]
+    change_percent: Optional[str]
+    currency: str
+    source: Optional[str]
+    fetched_at: str
 
 
 @dataclass
@@ -87,6 +130,32 @@ class Storage(ABC):
     @abstractmethod
     def count_domains(self) -> int: ...
 
+    # ---- books ----
+    @abstractmethod
+    def save_book(self, book: Book) -> int: ...
+
+    @abstractmethod
+    def get_book_by_url(self, url: str) -> Optional[Book]: ...
+
+    @abstractmethod
+    def get_books(self, limit: int = 100, offset: int = 0) -> list[Book]: ...
+
+    # ---- crypto ----
+    @abstractmethod
+    def save_crypto_asset(self, asset: CryptoAsset) -> int: ...
+
+    @abstractmethod
+    def get_crypto_asset(self, symbol: str) -> Optional[CryptoAsset]: ...
+
+    @abstractmethod
+    def get_crypto_assets(self, limit: int = 100, offset: int = 0) -> list[CryptoAsset]: ...
+
+    @abstractmethod
+    def save_crypto_quote(self, quote: CryptoQuote) -> int: ...
+
+    @abstractmethod
+    def get_crypto_quote(self, symbol: str) -> Optional[CryptoQuote]: ...
+
     # ---- users ----
     @abstractmethod
     def create_user(self, email: str, password_hash: str, display_name: str) -> User: ...
@@ -113,6 +182,27 @@ class Storage(ABC):
                  next_crawl_at: Optional[str] = None) -> None: ...
     @abstractmethod
     def get_url_attempts(self, url: str) -> int: ...
+
+    @abstractmethod
+    def register_news_candidate(
+        self,
+        url: str,
+        feed_url: str,
+        feed_kind: str,
+    ) -> None: ...
+
+    @abstractmethod
+    def link_news_document(
+        self,
+        document_id: int,
+        url: str,
+        canonical_url: str,
+        feed_url: Optional[str] = None,
+        feed_kind: Optional[str] = None,
+    ) -> None: ...
+
+    @abstractmethod
+    def search_news_document_ids(self, limit: int = 10000) -> list[int]: ...
     @abstractmethod
     def queue_size(self) -> int: ...
     @abstractmethod

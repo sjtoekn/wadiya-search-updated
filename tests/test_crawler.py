@@ -94,6 +94,56 @@ class CrawlerTests(TempDirCase):
         self.assertGreater(seconds, 4.5)
         self.assertLessEqual(seconds, 5.5)
 
+    def test_news_candidate_is_not_starved_by_depth_zero_queue(self):
+        from dataclasses import replace
+
+        settings = replace(
+            self.settings,
+            max_total_pages=5,
+            max_workers=1,
+        )
+
+        routes = site_routes()
+        routes["/news-article"] = (
+            200,
+            *page(
+                "News Article",
+                "This is a news article with enough content for crawling and indexing.",
+            ),
+        )
+
+        with MockSite(routes) as site:
+            news_url = site.base + "/news-article"
+
+            self.storage.register_news_candidate(
+                news_url,
+                site.base + "/feed.xml",
+                "rss",
+            )
+            self.storage.enqueue(news_url, "127.0.0.1", 1)
+
+            for i in range(5):
+                self.storage.enqueue(
+                    f"{site.base}/depth-zero-{i}",
+                    "127.0.0.1",
+                    0,
+                )
+
+            env = Env(settings, site)
+            stats = env.crawler(self.storage).run(
+                [Seed(site.base + "/")],
+                fresh=False,
+            )
+
+        with self.storage._conn() as c:
+            row = c.execute(
+                "SELECT status FROM urls WHERE url=?",
+                (news_url,),
+            ).fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row["status"], "done")
+
     def test_full_crawl_behaviour(self):
         with MockSite(site_routes()) as site:
             stats, _ = self.run_crawl(site)
@@ -125,6 +175,113 @@ class CrawlerTests(TempDirCase):
             run = self.storage.last_run()
             self.assertEqual((run["state"], run["stored"]), ("finished", 4))
             self.assertTrue(self.storage.recent_crawl_errors())
+
+    def test_schema_location_is_extracted_and_persisted_end_to_end(self):
+        routes = site_routes()
+        routes["/map-place"] = (
+            200,
+            *page(
+                "Test Restaurant",
+                "A restaurant with structured location data.",
+                "<script type=\"application/ld+json\">"
+                "{\"@context\":\"https://schema.org\","
+                "\"@type\":\"Restaurant\","
+                "\"name\":\"Test Restaurant\","
+                "\"address\":{\"streetAddress\":\"123 Main St\","
+                "\"addressLocality\":\"Toronto\","
+                "\"addressRegion\":\"ON\","
+                "\"addressCountry\":\"CA\"},"
+                "\"geo\":{\"@type\":\"GeoCoordinates\","
+                "\"latitude\":43.6532,\"longitude\":-79.3832}}"
+                '</script>',
+            ),
+        )
+        routes["/"] = (
+            200,
+            *page(
+                "Home",
+                "Home page linking to a structured map location.",
+                links=["/map-place"],
+            ),
+        )
+
+        with MockSite(routes) as site:
+            stats, _ = self.run_crawl(site, env_kw={"max_depth": 1})
+
+            docs = self.storage.get_documents(range(1, 50))
+            doc = next(d for d in docs.values() if d.title == "Test Restaurant")
+            locations = self.storage.get_document_locations(doc.id)
+
+            self.assertGreaterEqual(stats.stored, 2)
+            self.assertEqual(len(locations), 1)
+            self.assertEqual(locations[0]["latitude"], 43.6532)
+            self.assertEqual(locations[0]["longitude"], -79.3832)
+            self.assertEqual(locations[0]["address"], "123 Main St")
+            self.assertEqual(locations[0]["city"], "Toronto")
+            self.assertEqual(locations[0]["region"], "ON")
+            self.assertEqual(locations[0]["country"], "CA")
+            self.assertIn(doc.id, self.storage.search_maps_document_ids())
+
+    def test_schema_book_is_extracted_and_persisted_end_to_end(self):
+        routes = site_routes()
+        routes["/book"] = (
+            200,
+            *page(
+                "Python Programming",
+                "A Python programming book.",
+                '<script type="application/ld+json">'
+                "{\"@context\":\"https://schema.org\","
+                "\"@type\":\"Book\","
+                "\"name\":\"Python Programming\","
+                "\"author\":[{\"@type\":\"Person\",\"name\":\"Example Author\"},"
+                "{\"@type\":\"Person\",\"name\":\"Second Author\"}],"
+                "\"isbn\":\"9781234567890\","
+                "\"image\":\"https://example.org/covers/python.jpg\","
+                "\"publisher\":{\"@type\":\"Organization\",\"name\":\"Example Press\"},"
+                "\"datePublished\":\"2026-01-01\","
+                "\"description\":\"A Python programming book.\","
+                "\"url\":\"https://example.org/books/python\","
+                "\"inLanguage\":\"en\"}"
+                '</script>',
+            ),
+        )
+        routes["/"] = (
+            200,
+            *page(
+                "Home",
+                "Home page linking to a structured book.",
+                links=["/book"],
+            ),
+        )
+
+        with MockSite(routes) as site:
+            stats, _ = self.run_crawl(site, env_kw={"max_depth": 1})
+
+            books = self.storage.get_books(limit=50)
+            book = next(b for b in books if b.title == "Python Programming")
+
+            self.assertGreaterEqual(stats.stored, 2)
+            self.assertEqual(book.author, ["Example Author", "Second Author"])
+            self.assertEqual(book.isbn, "9781234567890")
+            self.assertEqual(
+                book.cover_url,
+                "https://example.org/covers/python.jpg",
+            )
+            self.assertEqual(book.publisher, "Example Press")
+            self.assertEqual(book.published_at, "2026-01-01")
+            self.assertEqual(
+                book.description,
+                "A Python programming book.",
+            )
+            self.assertEqual(
+                book.url,
+                "https://example.org/books/python",
+            )
+            self.assertEqual(book.language, "en")
+            self.assertEqual(
+                book.source_url,
+                f"{site.base}/book",
+            )
 
     def test_canonical_url_is_discovered_and_crawled(self):
         routes = site_routes()
@@ -389,6 +546,13 @@ class FeedDiscoveryTests(TempDirCase):
             </channel></rss>""",
             {},
         )
+        routes["/feed-page"] = (
+            200,
+            *page(
+                "Feed Article",
+                "This is a feed-discovered article with enough content for indexing.",
+            ),
+        )
 
         with MockSite(routes) as site:
             routes["/feed.xml"] = tuple(
@@ -402,6 +566,30 @@ class FeedDiscoveryTests(TempDirCase):
         self.assertGreaterEqual(stats.attempted, 1)
         self.assertIn("/feed.xml", site.hits)
         self.assertIn("/feed-page", site.hits)
+
+        article_url = site.base + "/feed-page"
+
+        with self.storage._conn() as c:
+            document = c.execute(
+                "SELECT id, url FROM documents WHERE url=?",
+                (article_url,),
+            ).fetchone()
+
+            self.assertIsNotNone(document)
+
+            news = c.execute(
+                """
+                SELECT document_id, source_feed_url, source_feed_kind
+                FROM document_news
+                WHERE document_id=?
+                """,
+                (document["id"],),
+            ).fetchone()
+
+        self.assertIsNotNone(news)
+        self.assertEqual(news["document_id"], document["id"])
+        self.assertEqual(news["source_feed_url"], site.base + "/feed.xml")
+        self.assertEqual(news["source_feed_kind"], "rss")
 
 
 
@@ -1080,3 +1268,71 @@ class ContinuousSchedulerTests(TempDirCase):
 
         self.assertEqual(len(cycles), 2)
         self.assertEqual(sleeps, [0.0])
+
+
+def test_scheduler_syncs_books_index_after_crawl(tmp_path):
+    from wadiya.config.settings import Settings
+    from wadiya.crawler.scheduler import ContinuousCrawler
+    from wadiya.indexer.books import BooksIndexer
+    from wadiya.pipeline import sync_books_index
+    from wadiya.storage.base import Book
+    from wadiya.storage.sqlite_store import SQLiteStorage
+
+    settings = Settings(
+        db_path=str(tmp_path / "wadiya.db"),
+        index_path=str(tmp_path / "wadiya_index.db"),
+    )
+
+    storage = SQLiteStorage(settings.db_path)
+    storage.init()
+
+    storage.save_book(
+        Book(
+            id=None,
+            title="Scheduler Book",
+            author=["Scheduler Author"],
+            isbn="9789999999999",
+            cover_url=None,
+            publisher="Example Press",
+            published_at="2026-01-01",
+            description="Book waiting for automatic indexing.",
+            url="https://example.org/books/scheduler",
+            language="en",
+            score=0.0,
+            source_url="https://example.org/book",
+            crawled_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+        )
+    )
+
+    books_index = BooksIndexer(
+        str(tmp_path / "wadiya_books_index.db")
+    )
+    books_index.init()
+
+    class NoopCrawler:
+        pass
+
+    scheduler = ContinuousCrawler(
+        settings,
+        storage,
+        None,
+        None,
+        None,
+        books_indexer=books_index,
+        sleep=lambda _: None,
+    )
+
+    # The cycle must make the stored Book searchable without
+    # requiring the test to call sync_books_index() manually.
+    cycle = next(
+        scheduler.run(
+            [],
+            max_cycles=1,
+        )
+    )
+
+    hits = books_index.search("Scheduler Book", limit=10)
+
+    assert hits.total == 1
+    assert hits.hits[0]["title"] == "Scheduler Book"

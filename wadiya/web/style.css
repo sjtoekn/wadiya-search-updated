@@ -566,6 +566,104 @@ body:not(.home) main { max-width: 52rem; }
   .result { padding: var(--space-4); border-radius: 14px; }
 }
 
+
+/* ---- market landing ---- */
+.market-home {
+  width: 100%;
+  margin: 0 auto;
+}
+
+.market-home-intro {
+  margin-bottom: 1.4rem;
+}
+
+.market-home-intro h1 {
+  margin: 0;
+  font: var(--weight-bold) var(--text-2xl) var(--serif);
+  letter-spacing: -0.02em;
+}
+
+.market-home-intro p {
+  margin: .45rem 0 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+.market-home-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  max-width: 960px;
+}
+
+.market-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 220px;
+  padding: 1.25rem;
+  background: var(--panel);
+  border: var(--border-thin) solid var(--line);
+  border-radius: var(--radius-lg);
+}
+
+.market-card-kicker {
+  margin-bottom: .5rem;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+
+.market-card h2 {
+  margin: 0;
+  font: var(--weight-bold) var(--text-xl) var(--serif);
+  letter-spacing: -0.015em;
+}
+
+.market-card p {
+  margin: .55rem 0 1.2rem;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  max-width: 34rem;
+}
+
+.market-card-button {
+  margin-top: auto;
+  align-self: flex-start;
+  min-height: 40px;
+  padding: 0 .9rem;
+  border: var(--border-thin) solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+  cursor: pointer;
+}
+
+.market-card-button:hover {
+  border-color: var(--text);
+}
+
+.market-card-button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+@media (max-width: 700px) {
+  .market-home-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .market-card {
+    min-height: 0;
+  }
+}
+
 /* ---- finance search results ---- */
 .finance-meta {
   display: grid;
@@ -1654,4 +1752,93 @@ body:not(.home) .search-modes {
   margin-top: 12px;
   font-size: 0.88rem;
   color: #8a837b;
+}
+
+/* ---- Hotels & Travel landing ---- */
+.travel-page {
+  min-height: 100vh;
+}
+
+.travel-heading {
+  max-width: 46rem;
+  margin: 1.5rem auto 0;
+}
+
+.travel-heading h1 {
+  margin: 0;
+  font: var(--weight-bold) var(--text-2xl) var(--serif);
+  letter-spacing: -0.02em;
+}
+
+.travel-heading p {
+  margin: .5rem 0 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+.travel-main {
+  width: min(100% - 2rem, 60rem);
+  margin: 2rem auto 4rem;
+}
+
+.travel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.travel-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 210px;
+  padding: 1.25rem;
+  border: var(--border-thin) solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.travel-card:hover {
+  border-color: var(--text);
+}
+
+.travel-card:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.travel-card-kicker {
+  margin-bottom: .5rem;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+
+.travel-card h2 {
+  margin: 0;
+  font: var(--weight-bold) var(--text-xl) var(--serif);
+  letter-spacing: -0.015em;
+}
+
+.travel-card p {
+  margin: .55rem 0 1.2rem;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+.travel-card-link {
+  margin-top: auto;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+}
+
+@media (max-width: 700px) {
+  .travel-grid {
+    grid-template-columns: 1fr;
+  }
 }

@@ -22,6 +22,20 @@ class HandlerTests(SearchStackCase):
 
         self.assertEqual(body["results"][0]["canonical_url"], "https://e.org/1")
 
+    def test_documents_search_uses_document_search_pipeline(self):
+        self.seed()
+
+        status, body = handlers.handle_search(
+            self.svc,
+            "wadi",
+            "1",
+            search_type="documents",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["result_count"], 1)
+        self.assertEqual(body["results"][0]["title"], "Wadi guide")
+
     def test_books_search_uses_books_pipeline(self):
         status, body = handlers.handle_search(
             self.svc,
@@ -49,6 +63,27 @@ class HandlerTests(SearchStackCase):
                 "score",
             },
         )
+
+    def test_news_search_uses_news_document_pipeline(self):
+        self.seed()
+
+        self.storage.register_news_candidate(
+            "https://e.org/1",
+            "https://e.org/feed.xml",
+            "rss",
+        )
+
+        status, body = handlers.handle_search(
+            self.svc,
+            "wadi",
+            "1",
+            search_type="news",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["result_count"], 1)
+        self.assertEqual(body["results"][0]["title"], "Wadi guide")
+        self.assertEqual(body["results"][0]["url"], "https://e.org/1")
 
     def test_page_ok_returns_public_fields(self):
         self.seed()

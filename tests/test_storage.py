@@ -2,7 +2,7 @@ import sqlite3
 from pathlib import Path
 
 from tests.helpers import TempDirCase, make_doc
-from wadiya.storage.base import Document
+from wadiya.storage.base import Book, Document
 from wadiya.storage.sqlite_store import SCHEMA_VERSION, SQLiteStorage
 
 
@@ -367,6 +367,47 @@ class StorageTests(TempDirCase):
         ).hexdigest()
         self.assertEqual(s.recent_queries()[0]["query"], expected_hash)
 
+    def test_document_locations_persist_and_filter_maps(self):
+        s = self.storage
+
+        doc = make_doc(
+            url="https://example.org/place",
+            title="Toronto Place",
+            content="Toronto place guide",
+        )
+        doc.locations = [
+            {
+                "latitude": 43.6532,
+                "longitude": -79.3832,
+                "address": "123 Main St",
+                "city": "Toronto",
+                "region": "ON",
+                "country": "CA",
+                "source": "json-ld",
+            }
+        ]
+
+        result = s.save_document(doc)
+
+        self.assertEqual(result.outcome, "inserted")
+        self.assertEqual(
+            s.get_document_locations(result.doc_id),
+            [{
+                "latitude": 43.6532,
+                "longitude": -79.3832,
+                "address": "123 Main St",
+                "city": "Toronto",
+                "region": "ON",
+                "country": "CA",
+                "source": "json-ld",
+                "position": 0,
+            }],
+        )
+        self.assertEqual(
+            s.search_maps_document_ids(),
+            [result.doc_id],
+        )
+
     def test_search_images_uses_word_boundary_matching(self):
         s = self.storage
 
@@ -519,3 +560,207 @@ class DiscoveryRegistryTests(TempDirCase):
         self.assertEqual(row["crawl_count"], 2)
         self.assertEqual(row["failure_count"], 1)
         self.assertEqual(row["last_error"], "connection failed")
+
+
+class BooksStorageTests(TempDirCase):
+    def test_crypto_tables_migrate_and_round_trip(self):
+        import sqlite3
+
+        from wadiya.storage.base import CryptoAsset, CryptoQuote
+
+        with sqlite3.connect(self.storage.path) as conn:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+
+        self.assertEqual(version, SCHEMA_VERSION)
+        self.assertIn("crypto_assets", tables)
+        self.assertIn("crypto_quotes", tables)
+
+        asset = CryptoAsset(
+            id=None,
+            symbol="BTC",
+            name="Bitcoin",
+            asset_type="Cryptocurrency",
+            rank=1,
+            currency="USD",
+            updated_at="2026-10-08T00:00:00+00:00",
+        )
+
+        asset_id = self.storage.save_crypto_asset(asset)
+        self.assertGreater(asset_id, 0)
+
+        loaded_asset = self.storage.get_crypto_asset("btc")
+        self.assertIsNotNone(loaded_asset)
+        self.assertEqual(loaded_asset.symbol, "BTC")
+        self.assertEqual(loaded_asset.name, "Bitcoin")
+        self.assertEqual(loaded_asset.rank, 1)
+
+        quote = CryptoQuote(
+            id=None,
+            symbol="BTC",
+            price=65000.25,
+            change=125.50,
+            change_percent="0.19%",
+            currency="USD",
+            source="test",
+            fetched_at="2026-10-08T00:00:00+00:00",
+        )
+
+        quote_id = self.storage.save_crypto_quote(quote)
+        self.assertGreater(quote_id, 0)
+
+        loaded_quote = self.storage.get_crypto_quote("btc")
+        self.assertIsNotNone(loaded_quote)
+        self.assertEqual(loaded_quote.symbol, "BTC")
+        self.assertEqual(loaded_quote.price, 65000.25)
+        self.assertEqual(loaded_quote.change, 125.50)
+        self.assertEqual(loaded_quote.change_percent, "0.19%")
+        self.assertEqual(loaded_quote.source, "test")
+
+    def test_save_crypto_asset_updates_existing_symbol(self):
+        from wadiya.storage.base import CryptoAsset
+
+        first = CryptoAsset(
+            id=None,
+            symbol="ETH",
+            name="Ethereum",
+            asset_type="Cryptocurrency",
+            rank=2,
+            currency="USD",
+            updated_at="2026-10-08T00:00:00+00:00",
+        )
+
+        asset_id = self.storage.save_crypto_asset(first)
+
+        updated = CryptoAsset(
+            **{
+                **first.__dict__,
+                "name": "Ethereum Updated",
+                "rank": 2,
+            }
+        )
+
+        same_id = self.storage.save_crypto_asset(updated)
+
+        self.assertEqual(same_id, asset_id)
+
+        loaded = self.storage.get_crypto_asset("ETH")
+        self.assertEqual(loaded.id, asset_id)
+        self.assertEqual(loaded.name, "Ethereum Updated")
+
+    def test_save_crypto_quote_updates_existing_symbol(self):
+        from wadiya.storage.base import CryptoQuote
+
+        first = CryptoQuote(
+            id=None,
+            symbol="SOL",
+            price=100.0,
+            change=1.0,
+            change_percent="1.00%",
+            currency="USD",
+            source="test",
+            fetched_at="2026-10-08T00:00:00+00:00",
+        )
+
+        quote_id = self.storage.save_crypto_quote(first)
+
+        updated = CryptoQuote(
+            **{
+                **first.__dict__,
+                "price": 125.0,
+                "change": 2.5,
+                "change_percent": "2.00%",
+            }
+        )
+
+        same_id = self.storage.save_crypto_quote(updated)
+
+        self.assertEqual(same_id, quote_id)
+
+        loaded = self.storage.get_crypto_quote("SOL")
+        self.assertEqual(loaded.id, quote_id)
+        self.assertEqual(loaded.price, 125.0)
+        self.assertEqual(loaded.change, 2.5)
+
+    def test_books_table_migrates_and_round_trips(self):
+        import sqlite3
+
+        with sqlite3.connect(self.storage.path) as conn:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+
+        self.assertEqual(version, SCHEMA_VERSION)
+        self.assertIn("books", tables)
+
+        book = Book(
+            id=None,
+            title="Python Programming",
+            author=["Example Author", "Second Author"],
+            isbn="9781234567890",
+            cover_url="https://example.com/cover.jpg",
+            publisher="Example Press",
+            published_at="2026-01-01",
+            description="A test book.",
+            url="https://example.com/books/python",
+            language="en",
+            score=1.25,
+            source_url="https://example.com/books",
+            crawled_at="2026-10-08T00:00:00+00:00",
+            updated_at="2026-10-08T00:00:00+00:00",
+        )
+
+        book_id = self.storage.save_book(book)
+        self.assertGreater(book_id, 0)
+
+        loaded = self.storage.get_book_by_url(book.url)
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.title, book.title)
+        self.assertEqual(loaded.author, book.author)
+        self.assertEqual(loaded.isbn, book.isbn)
+        self.assertEqual(loaded.publisher, book.publisher)
+
+    def test_save_book_updates_existing_url(self):
+        first = Book(
+            id=None,
+            title="Old Title",
+            author=["Author"],
+            isbn=None,
+            cover_url=None,
+            publisher=None,
+            published_at=None,
+            description="Old",
+            url="https://example.com/book",
+            language="en",
+            score=1.0,
+            source_url=None,
+            crawled_at="2026-10-08T00:00:00+00:00",
+            updated_at="2026-10-08T00:00:00+00:00",
+        )
+
+        book_id = self.storage.save_book(first)
+
+        updated = Book(
+            **{
+                **first.__dict__,
+                "title": "New Title",
+                "description": "Updated",
+            }
+        )
+
+        same_id = self.storage.save_book(updated)
+
+        self.assertEqual(same_id, book_id)
+        loaded = self.storage.get_book_by_url(first.url)
+        self.assertEqual(loaded.id, book_id)
+        self.assertEqual(loaded.title, "New Title")
+        self.assertEqual(loaded.description, "Updated")

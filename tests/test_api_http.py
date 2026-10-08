@@ -52,6 +52,48 @@ class ApiHttpTests(SearchStackCase):
             self.assertEqual(r.status_code, 400, url)
             self.assertIn("message", r.json()["error"])
 
+    def test_documents_search(self):
+        r = self.client.get(
+            "/api/search",
+            params={"q": "wadi", "type": "documents"},
+        )
+
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["result_count"], 1)
+        self.assertEqual(body["results"][0]["title"], "Wadi guide")
+        self.assertEqual(body["results"][0]["url"], "https://e.org/1")
+
+    def test_books_search(self):
+        r = self.client.get(
+            "/api/search",
+            params={"q": "python", "type": "books"},
+        )
+
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+
+        self.assertEqual(body["result_count"], 0)
+        self.assertEqual(body["results"], [])
+
+    def test_news_search(self):
+        self.storage.register_news_candidate(
+            "https://e.org/1",
+            "https://e.org/feed.xml",
+            "rss",
+        )
+
+        r = self.client.get(
+            "/api/search",
+            params={"q": "wadi", "type": "news"},
+        )
+
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["result_count"], 1)
+        self.assertEqual(body["results"][0]["title"], "Wadi guide")
+        self.assertEqual(body["results"][0]["url"], "https://e.org/1")
+
     def test_search_query_operators(self):
         self.add(
             url="https://example.com/python.pdf",
@@ -493,3 +535,63 @@ class ApiHttpHardeningTests(SearchStackCase):
         self.assertEqual(r.status_code, 200); self.assertIn('id="searchForm"', r.text)
         self.assertIn("javascript", self.client.get("/static/app.js").headers["content-type"])
         self.assertEqual(self.client.get("/admin").status_code, 200)
+
+
+def test_books_api_uses_database_backed_books(tmp_path):
+    from wadiya.config.settings import Settings
+    from wadiya.storage.base import Book
+    from wadiya.storage.sqlite_store import SQLiteStorage
+
+    settings = Settings(
+        db_path=str(tmp_path / "wadiya.db"),
+        index_path=str(tmp_path / "wadiya_index.db"),
+    )
+
+    storage = SQLiteStorage(settings.db_path)
+    storage.init()
+
+    storage.save_book(
+        Book(
+            id=None,
+            title="Distributed Systems Architecture",
+            author=["Example Author"],
+            isbn="9781234567890",
+            cover_url=None,
+            publisher="Example Press",
+            published_at="2026-01-01",
+            description="A distributed systems architecture book.",
+            url="https://example.org/books/distributed-systems",
+            language="en",
+            score=0.0,
+            source_url="https://example.org/book",
+            crawled_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+        )
+    )
+
+    from wadiya.api.app import create_app
+    from wadiya.indexer.books import BooksIndexer
+    from wadiya.pipeline import sync_books_index
+
+    books_index = BooksIndexer(str(tmp_path / "wadiya_books_index.db"))
+    books_index.init()
+    sync_books_index(storage, books_index)
+
+    app = create_app(
+        settings=settings,
+        storage=storage,
+        indexer=None,
+    )
+
+    from starlette.testclient import TestClient
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/search",
+            params={"q": "Distributed Systems Architecture", "type": "books"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["results"][0]["title"] == "Distributed Systems Architecture"
+    assert body["results"][0]["author"] == ["Example Author"]

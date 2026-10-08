@@ -227,7 +227,8 @@ class FTS5Indexer(Indexer):
 
     def search(self, query, limit: int, offset: int = 0, match_all: bool = True,
                weights: Optional[dict] = None, count_cap: int = 10_000,
-               _allow_typo: bool = True) -> SearchHits:
+               _allow_typo: bool = True,
+               allowed_doc_ids: Optional[Iterable[int]] = None) -> SearchHits:
         w = {**DEFAULT_WEIGHTS, **(weights or {})}
         match = self.build_match(query, match_all)
 
@@ -236,6 +237,19 @@ class FTS5Indexer(Indexer):
 
         filters = []
         params = []
+
+        if allowed_doc_ids is not None:
+            doc_ids = sorted({int(doc_id) for doc_id in allowed_doc_ids})
+            if not doc_ids:
+                return SearchHits(0, False, [])
+
+            # IDs originate from our own storage DB, so embedding the
+            # validated integers avoids SQLite variable-count limits.
+            filters.append(
+                "docs_fts.rowid IN (" +
+                ",".join(str(doc_id) for doc_id in doc_ids) +
+                ")"
+            )
 
         if query.sites:
             site_parts = []
@@ -331,6 +345,7 @@ class FTS5Indexer(Indexer):
                     weights,
                     count_cap,
                     False,
+                    allowed_doc_ids,
                 )
                 return replace(
                     corrected_result,

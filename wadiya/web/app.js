@@ -43,6 +43,17 @@
         return;
       }
 
+      if (mode === 'market') {
+        history.pushState(
+          { q: q, page: 1, mode: 'market' },
+          '',
+          '/search?q=' + encodeURIComponent(q) + '&type=market'
+        );
+
+        renderMarketHome();
+        return;
+      }
+
       var target = '/search?q=' + encodeURIComponent(q) + '&type=' + encodeURIComponent(mode);
       history.pushState(
         { q: q, page: 1, mode: mode },
@@ -829,6 +840,103 @@
     pagerEl.appendChild(next);
   }
 
+  function renderMarketHome() {
+    resultsEl.classList.remove('image-results', 'video-results');
+    resultsEl.textContent = '';
+    pagerEl.textContent = '';
+    setStatus('', false);
+
+    var wrapper = el('section', 'market-home');
+
+    var intro = el('div', 'market-home-intro');
+    intro.appendChild(el('h1', null, 'Market'));
+    intro.appendChild(
+      el(
+        'p',
+        null,
+        'Explore stock markets and cryptocurrency markets in one place.'
+      )
+    );
+    wrapper.appendChild(intro);
+
+    var grid = el('div', 'market-home-grid');
+
+    var stock = el('article', 'market-card');
+    stock.appendChild(el('div', 'market-card-kicker', 'Stocks'));
+    stock.appendChild(el('h2', null, 'Stock Market'));
+    stock.appendChild(
+      el(
+        'p',
+        null,
+        'Search companies, stocks, prices, market information, and quotes.'
+      )
+    );
+
+    var stockButton = el('button', 'market-card-button', 'Explore Stock Market');
+    stockButton.type = 'button';
+    stockButton.addEventListener('click', function () {
+      var q = (input && input.value || '').trim();
+
+      setActiveSearchMode('finance');
+
+      history.pushState(
+        { q: q, page: 1, mode: 'finance' },
+        '',
+        '/search?q=' + encodeURIComponent(q) + '&type=finance'
+      );
+
+      if (q) {
+        search(q, 1, false, 'finance');
+      } else {
+        setStatus('Enter a stock or company name in the search box.', false);
+        resultsEl.textContent = '';
+        pagerEl.textContent = '';
+      }
+    });
+
+    stock.appendChild(stockButton);
+    grid.appendChild(stock);
+
+    var crypto = el('article', 'market-card');
+    crypto.appendChild(el('div', 'market-card-kicker', 'Digital assets'));
+    crypto.appendChild(el('h2', null, 'Crypto Market'));
+    crypto.appendChild(
+      el(
+        'p',
+        null,
+        'Search cryptocurrencies and view the latest cached market quotes.'
+      )
+    );
+
+    var cryptoButton = el('button', 'market-card-button', 'Explore Crypto Market');
+    cryptoButton.type = 'button';
+    cryptoButton.addEventListener('click', function () {
+      var q = (input && input.value || '').trim();
+
+      setActiveSearchMode('crypto');
+
+      history.pushState(
+        { q: q, page: 1, mode: 'crypto' },
+        '',
+        '/search?q=' + encodeURIComponent(q) + '&type=crypto'
+      );
+
+      if (q) {
+        search(q, 1, false, 'crypto');
+      } else {
+        setStatus('Enter a cryptocurrency name or symbol in the search box.', false);
+        resultsEl.textContent = '';
+        pagerEl.textContent = '';
+      }
+    });
+
+    crypto.appendChild(cryptoButton);
+    grid.appendChild(crypto);
+
+    wrapper.appendChild(grid);
+    resultsEl.appendChild(wrapper);
+  }
+
   function search(q, page, push, mode) {
     q = (q || '').trim(); page = page || 1; mode = mode || 'web';
     if (!q) return;
@@ -937,7 +1045,9 @@
         document.title = q.trim() + ' – Wadiya.com';
         setSearchModes(true);
         setActiveSearchMode(mode);
-        if (mode === 'images' || mode === 'videos' || mode === 'documents' || mode === 'news' || mode === 'finance' || mode === 'crypto') {
+        if (mode === 'market') {
+          renderMarketHome();
+        } else if (mode === 'images' || mode === 'videos' || mode === 'documents' || mode === 'news' || mode === 'finance' || mode === 'crypto') {
           search(q.trim(), page > 0 ? page : 1, false, mode);
         } else {
           setStatus(mode.charAt(0).toUpperCase() + mode.slice(1) + ' search is coming next.', false);

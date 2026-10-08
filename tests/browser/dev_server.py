@@ -74,7 +74,12 @@ def make_server(tmp, port=0):
         def do_GET(self):
             u = urlsplit(self.path); q = parse_qs(u.query)
             if u.path == "/api/search":
-                code, body = handlers.handle_search(service, (q.get("q") or [""])[0], (q.get("page") or ["1"])[0])
+                code, body = handlers.handle_search(
+                    service,
+                    (q.get("q") or [""])[0],
+                    (q.get("page") or ["1"])[0],
+                    (q.get("type") or ["web"])[0],
+                )
                 return self._send(code, body)
             if u.path == "/api/discovery":
                 code, body = handlers.handle_discovery(storage, (q.get("domain") or [""])[0])

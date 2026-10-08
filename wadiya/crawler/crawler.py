@@ -10,7 +10,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from ..storage.base import Document, Storage, now_iso
+from ..storage.base import Book, Document, Storage, now_iso
 from .extractor import extract
 from .feed import parse_feed
 from .lock import CrawlLock
@@ -135,7 +135,14 @@ class Crawler:
                         }
                         excluded = blocked | active_domains
 
-                        item = self.storage.claim_next(excluded)
+                        reserve_news = len(futures) == 0
+                        if reserve_news:
+                            item = self.storage.claim_next_news(excluded)
+                            if item is None:
+                                item = self.storage.claim_next(excluded)
+                        else:
+                            item = self.storage.claim_next(excluded)
+
                         if item is None:
                             break
 
@@ -385,7 +392,17 @@ class Crawler:
             except ValueError:
                 continue
 
-            self._enqueue_links(list(document.urls), item, cfg, scope)
+            article_urls = list(document.urls)
+            feed_source = res.final_url or normalized
+
+            for article_url in article_urls:
+                self.storage.register_news_candidate(
+                    article_url,
+                    feed_source,
+                    document.kind,
+                )
+
+            self._enqueue_links(article_urls, item, cfg, scope)
 
     # ------------------------------------------------------------------ one URL
     def _finish(self, run_id, url, outcome, queue_status, http=None, ms=None, error=None):
@@ -551,8 +568,36 @@ class Crawler:
                        description=page.description, content=content, language=page.language, status="ok",
                        content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
                        crawled_at=now, updated_at=now, headings="\n".join(page.headings),
-                       nosnippet=bool(page.nosnippet), images=list(page.images))
+                       nosnippet=bool(page.nosnippet), images=list(page.images),
+                       videos=list(page.videos), locations=list(page.locations))
         saved = self.storage.save_document(doc)
+
+        for extracted in page.books:
+            book = Book(
+                id=None,
+                title=extracted["title"],
+                author=list(extracted.get("author") or []),
+                isbn=extracted.get("isbn"),
+                cover_url=extracted.get("cover_url"),
+                publisher=extracted.get("publisher"),
+                published_at=extracted.get("published_at"),
+                description=extracted.get("description"),
+                url=extracted["url"],
+                language=extracted.get("language"),
+                score=0.0,
+                source_url=extracted.get("source_url") or final,
+                crawled_at=now,
+                updated_at=now,
+            )
+            self.storage.save_book(book)
+
+        if saved.doc_id is not None:
+            self.storage.link_news_document(
+                saved.doc_id,
+                final,
+                canonical,
+            )
+
         if saved.outcome == "duplicate":
             stats.duplicates += 1
             return self._finish(run_id, url, "duplicate", "duplicate", res.status, res.elapsed_ms)

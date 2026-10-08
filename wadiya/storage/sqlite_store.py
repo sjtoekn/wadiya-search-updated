@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Sequence
 
-from .base import Document, QueueItem, SaveResult, Storage, User, now_iso
+from .base import Book, Document, CryptoAsset, CryptoQuote, QueueItem, SaveResult, Storage, User, now_iso
 from ..crawler.urls import discovery_admission
 
 SCHEMA = """
@@ -147,7 +147,7 @@ _COUNTED = ("done", "duplicate", "noindex")   # statuses that consumed a page of
 QUERY_LOG_KEEP = 10_000
 
 # Database schema version. Increment this when a new migration is added.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 14
 
 
 def _doc(row: sqlite3.Row) -> Document:
@@ -433,11 +433,480 @@ class SQLiteStorage(Storage):
                 c.execute("PRAGMA user_version = 9")
                 current_version = 9
 
+            # Migration 10: persist crawled video candidates separately from documents.
+            if current_version < 10:
+                c.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS document_videos (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      document_id INTEGER NOT NULL,
+                      video_url TEXT NOT NULL,
+                      kind TEXT NOT NULL DEFAULT 'direct',
+                      source_page_url TEXT NOT NULL,
+                      source_domain TEXT NOT NULL,
+                      title TEXT NOT NULL DEFAULT '',
+                      thumbnail_url TEXT NOT NULL DEFAULT '',
+                      position INTEGER NOT NULL DEFAULT 0,
+                      created_at TEXT NOT NULL,
+                      UNIQUE(document_id, video_url),
+                      FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
+                    )
+                    """
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "idx_document_videos_document "
+                    "ON document_videos(document_id)"
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "idx_document_videos_domain "
+                    "ON document_videos(source_domain)"
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "idx_document_videos_kind "
+                    "ON document_videos(kind)"
+                )
+                c.execute("PRAGMA user_version = 10")
+                current_version = 10
+
+            # Migration 11: persist RSS/Atom article provenance for News search.
+            if current_version < 11:
+                c.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS document_news (
+                      document_id INTEGER PRIMARY KEY,
+                      source_feed_url TEXT NOT NULL,
+                      source_feed_kind TEXT NOT NULL,
+                      discovered_at TEXT NOT NULL,
+                      FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
+                    )
+                    """
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "idx_document_news_feed "
+                    "ON document_news(source_feed_url)"
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "idx_document_news_kind "
+                    "ON document_news(source_feed_kind)"
+                )
+                c.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS news_candidates (
+                      url TEXT PRIMARY KEY,
+                      source_feed_url TEXT NOT NULL,
+                      source_feed_kind TEXT NOT NULL,
+                      discovered_at TEXT NOT NULL
+                    )
+                    """
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "idx_news_candidates_feed "
+                    "ON news_candidates(source_feed_url)"
+                )
+                c.execute("PRAGMA user_version = 11")
+                current_version = 11
+
+            # Migration 12: persist structured map locations extracted from crawled pages.
+            if current_version < 12:
+                c.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS document_locations (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      document_id INTEGER NOT NULL,
+                      latitude REAL NOT NULL,
+                      longitude REAL NOT NULL,
+                      address TEXT NOT NULL DEFAULT "",
+                      city TEXT NOT NULL DEFAULT "",
+                      region TEXT NOT NULL DEFAULT "",
+                      country TEXT NOT NULL DEFAULT "",
+                      source TEXT NOT NULL DEFAULT "json-ld",
+                      position INTEGER NOT NULL DEFAULT 0,
+                      created_at TEXT NOT NULL,
+                      FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
+                    )
+                    """
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_document_locations_document "
+                    "ON document_locations(document_id)"
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_document_locations_coordinates "
+                    "ON document_locations(latitude, longitude)"
+                )
+                c.execute("PRAGMA user_version = 12")
+                current_version = 12
+
+            # Migration 13: add Books storage.
+            if current_version < 13:
+                c.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS books (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      title TEXT NOT NULL,
+                      author TEXT NOT NULL DEFAULT '[]',
+                      isbn TEXT,
+                      cover_url TEXT,
+                      publisher TEXT,
+                      published_at TEXT,
+                      description TEXT,
+                      url TEXT NOT NULL UNIQUE,
+                      language TEXT,
+                      score REAL NOT NULL DEFAULT 0,
+                      source_url TEXT,
+                      crawled_at TEXT NOT NULL,
+                      updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_books_title "
+                    "ON books(title)"
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_books_isbn "
+                    "ON books(isbn)"
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_books_published_at "
+                    "ON books(published_at)"
+                )
+                c.execute("PRAGMA user_version = 13")
+                current_version = 13
+
+            # Migration 14: crypto assets and cached quotes.
+            if current_version < 14:
+                c.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS crypto_assets (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      symbol TEXT NOT NULL UNIQUE,
+                      name TEXT NOT NULL,
+                      asset_type TEXT NOT NULL,
+                      rank INTEGER,
+                      currency TEXT NOT NULL DEFAULT 'USD',
+                      updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                c.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_crypto_assets_name
+                    ON crypto_assets(name)
+                    """
+                )
+                c.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_crypto_assets_rank
+                    ON crypto_assets(rank)
+                    """
+                )
+
+                c.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS crypto_quotes (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      symbol TEXT NOT NULL UNIQUE,
+                      price REAL,
+                      change REAL,
+                      change_percent TEXT,
+                      currency TEXT NOT NULL DEFAULT 'USD',
+                      source TEXT,
+                      fetched_at TEXT NOT NULL,
+                      FOREIGN KEY(symbol) REFERENCES crypto_assets(symbol)
+                    )
+                    """
+                )
+                c.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_crypto_quotes_fetched_at
+                    ON crypto_quotes(fetched_at)
+                    """
+                )
+
+                c.execute("PRAGMA user_version = 14")
+                current_version = 14
+
             if current_version != SCHEMA_VERSION:
                 raise RuntimeError(
                     f"database migration incomplete: "
                     f"version {current_version}, expected {SCHEMA_VERSION}"
                 )
+
+    # ------------------------------------------------------------------ books
+    @staticmethod
+    def _book(row: sqlite3.Row) -> Book:
+        import json
+
+        return Book(
+            id=row["id"],
+            title=row["title"],
+            author=json.loads(row["author"] or "[]"),
+            isbn=row["isbn"],
+            cover_url=row["cover_url"],
+            publisher=row["publisher"],
+            published_at=row["published_at"],
+            description=row["description"],
+            url=row["url"],
+            language=row["language"],
+            score=float(row["score"] or 0),
+            source_url=row["source_url"],
+            crawled_at=row["crawled_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def save_book(self, book: Book) -> int:
+        import json
+
+        now = now_iso()
+
+        with self._conn(write=True) as c:
+            existing = c.execute(
+                "SELECT id FROM books WHERE url=?",
+                (book.url,),
+            ).fetchone()
+
+            values = (
+                book.title,
+                json.dumps(list(book.author), ensure_ascii=False),
+                book.isbn,
+                book.cover_url,
+                book.publisher,
+                book.published_at,
+                book.description,
+                book.url,
+                book.language,
+                float(book.score),
+                book.source_url,
+                book.crawled_at or now,
+                now,
+            )
+
+            if existing:
+                c.execute(
+                    """
+                    UPDATE books SET
+                      title=?,
+                      author=?,
+                      isbn=?,
+                      cover_url=?,
+                      publisher=?,
+                      published_at=?,
+                      description=?,
+                      url=?,
+                      language=?,
+                      score=?,
+                      source_url=?,
+                      crawled_at=?,
+                      updated_at=?
+                    WHERE id=?
+                    """,
+                    values + (existing["id"],),
+                )
+                return int(existing["id"])
+
+            cur = c.execute(
+                """
+                INSERT INTO books (
+                  title, author, isbn, cover_url, publisher,
+                  published_at, description, url, language,
+                  score, source_url, crawled_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+            return int(cur.lastrowid)
+
+    def get_book_by_url(self, url: str) -> Optional[Book]:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM books WHERE url=? LIMIT 1",
+                (url,),
+            ).fetchone()
+            return self._book(row) if row else None
+
+    def get_books(self, limit: int = 100, offset: int = 0) -> list[Book]:
+        limit = max(0, int(limit))
+        offset = max(0, int(offset))
+
+        with self._conn() as c:
+            rows = c.execute(
+                """
+                SELECT * FROM books
+                ORDER BY score DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            ).fetchall()
+
+            return [self._book(row) for row in rows]
+
+    # ------------------------------------------------------------------ crypto
+    @staticmethod
+    def _crypto_asset(row: sqlite3.Row) -> CryptoAsset:
+        return CryptoAsset(
+            id=int(row["id"]) if row["id"] is not None else None,
+            symbol=row["symbol"],
+            name=row["name"],
+            asset_type=row["asset_type"],
+            rank=int(row["rank"]) if row["rank"] is not None else None,
+            currency=row["currency"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _crypto_quote(row: sqlite3.Row) -> CryptoQuote:
+        return CryptoQuote(
+            id=int(row["id"]) if row["id"] is not None else None,
+            symbol=row["symbol"],
+            price=float(row["price"]) if row["price"] is not None else None,
+            change=float(row["change"]) if row["change"] is not None else None,
+            change_percent=row["change_percent"],
+            currency=row["currency"],
+            source=row["source"],
+            fetched_at=row["fetched_at"],
+        )
+
+    def save_crypto_asset(self, asset: CryptoAsset) -> int:
+        now = now_iso()
+        updated_at = asset.updated_at or now
+
+        with self._conn(write=True) as c:
+            existing = c.execute(
+                "SELECT id FROM crypto_assets WHERE symbol=?",
+                (asset.symbol.strip().upper(),),
+            ).fetchone()
+
+            values = (
+                asset.symbol.strip().upper(),
+                asset.name.strip(),
+                asset.asset_type.strip(),
+                asset.rank,
+                asset.currency.strip().upper() or "USD",
+                updated_at,
+            )
+
+            if existing:
+                c.execute(
+                    """
+                    UPDATE crypto_assets SET
+                      symbol=?,
+                      name=?,
+                      asset_type=?,
+                      rank=?,
+                      currency=?,
+                      updated_at=?
+                    WHERE id=?
+                    """,
+                    values + (existing["id"],),
+                )
+                return int(existing["id"])
+
+            cur = c.execute(
+                """
+                INSERT INTO crypto_assets (
+                  symbol, name, asset_type, rank, currency, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+            return int(cur.lastrowid)
+
+    def get_crypto_asset(self, symbol: str) -> Optional[CryptoAsset]:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM crypto_assets WHERE symbol=? LIMIT 1",
+                (symbol.strip().upper(),),
+            ).fetchone()
+            return self._crypto_asset(row) if row else None
+
+    def get_crypto_assets(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[CryptoAsset]:
+        limit = max(0, int(limit))
+        offset = max(0, int(offset))
+
+        with self._conn() as c:
+            rows = c.execute(
+                """
+                SELECT * FROM crypto_assets
+                ORDER BY
+                  CASE WHEN rank IS NULL THEN 1 ELSE 0 END,
+                  rank ASC,
+                  id ASC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            ).fetchall()
+
+            return [self._crypto_asset(row) for row in rows]
+
+    def save_crypto_quote(self, quote: CryptoQuote) -> int:
+        symbol = quote.symbol.strip().upper()
+        currency = quote.currency.strip().upper() or "USD"
+
+        with self._conn(write=True) as c:
+            existing = c.execute(
+                "SELECT id FROM crypto_quotes WHERE symbol=?",
+                (symbol,),
+            ).fetchone()
+
+            values = (
+                symbol,
+                quote.price,
+                quote.change,
+                quote.change_percent,
+                currency,
+                quote.source,
+                quote.fetched_at,
+            )
+
+            if existing:
+                c.execute(
+                    """
+                    UPDATE crypto_quotes SET
+                      symbol=?,
+                      price=?,
+                      change=?,
+                      change_percent=?,
+                      currency=?,
+                      source=?,
+                      fetched_at=?
+                    WHERE id=?
+                    """,
+                    values + (existing["id"],),
+                )
+                return int(existing["id"])
+
+            cur = c.execute(
+                """
+                INSERT INTO crypto_quotes (
+                  symbol, price, change, change_percent,
+                  currency, source, fetched_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+            return int(cur.lastrowid)
+
+    def get_crypto_quote(self, symbol: str) -> Optional[CryptoQuote]:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM crypto_quotes WHERE symbol=? LIMIT 1",
+                (symbol.strip().upper(),),
+            ).fetchone()
+            return self._crypto_quote(row) if row else None
 
     # ------------------------------------------------------------------ users
     def get_user_by_google_subject(self, google_subject: str) -> Optional[User]:
@@ -540,6 +1009,210 @@ class SQLiteStorage(Storage):
             )
 
     @staticmethod
+    def _replace_document_videos(c, document_id: int, videos) -> None:
+        c.execute(
+            "DELETE FROM document_videos WHERE document_id=?",
+            (document_id,),
+        )
+
+        now = now_iso()
+        for position, video in enumerate(videos or []):
+            if not isinstance(video, dict):
+                continue
+
+            video_url = str(video.get("video_url") or "").strip()
+            if not video_url:
+                continue
+
+            kind = str(video.get("kind") or "direct").strip().lower()
+            if kind not in ("direct", "embed"):
+                kind = "direct"
+
+            c.execute(
+                """
+                INSERT OR IGNORE INTO document_videos (
+                  document_id,
+                  video_url,
+                  kind,
+                  source_page_url,
+                  source_domain,
+                  title,
+                  thumbnail_url,
+                  position,
+                  created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    document_id,
+                    video_url,
+                    kind,
+                    str(video.get("source_page_url") or "").strip(),
+                    str(video.get("source_domain") or "").strip(),
+                    str(video.get("title") or "").strip(),
+                    str(video.get("thumbnail_url") or "").strip(),
+                    position,
+                    now,
+                ),
+            )
+
+    @staticmethod
+    def _replace_document_locations(c, document_id: int, locations) -> None:
+        c.execute("DELETE FROM document_locations WHERE document_id=?", (document_id,))
+        now = now_iso()
+        for position, location in enumerate(locations or []):
+            if not isinstance(location, dict):
+                continue
+            try:
+                latitude = float(location.get("latitude"))
+                longitude = float(location.get("longitude"))
+            except (TypeError, ValueError):
+                continue
+            if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+                continue
+            c.execute("INSERT INTO document_locations (document_id, latitude, longitude, address, city, region, country, source, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (document_id, latitude, longitude, str(location.get("address") or "").strip(), str(location.get("city") or "").strip(), str(location.get("region") or "").strip(), str(location.get("country") or "").strip(), str(location.get("source") or "json-ld").strip(), position, now))
+
+    @staticmethod
+    def _delete_document_videos(c, document_ids) -> None:
+        ids = [int(i) for i in document_ids if i is not None]
+        if not ids:
+            return
+        placeholders = ",".join("?" * len(ids))
+        c.execute(
+            f"DELETE FROM document_videos WHERE document_id IN ({placeholders})",
+            ids,
+        )
+
+    def get_document_locations(self, document_id: int) -> list:
+        with self._conn() as c:
+            rows = c.execute(
+                """
+                SELECT latitude, longitude, address, city, region, country,
+                       source, position
+                FROM document_locations
+                WHERE document_id=?
+                ORDER BY position, id
+                """,
+                (document_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def get_document_videos(self, document_id: int) -> list:
+        with self._conn() as c:
+            rows = c.execute(
+                """
+                SELECT video_url, kind, source_page_url, source_domain,
+                       title, thumbnail_url, position
+                FROM document_videos
+                WHERE document_id=?
+                ORDER BY position, id
+                """,
+                (document_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def documents_needing_video_backfill(
+        self,
+        limit: int = 100,
+        after_id: int = 0,
+    ):
+        """Return active documents needing video extraction after a document-id cursor."""
+        limit = max(1, int(limit))
+        after_id = max(0, int(after_id))
+        with self._conn() as c:
+            rows = c.execute(
+                """
+                SELECT d.id, d.url, d.canonical_url, d.domain
+                FROM documents d
+                WHERE d.status='ok'
+                  AND d.id > ?
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM document_videos dv
+                    WHERE dv.document_id=d.id
+                  )
+                ORDER BY d.id
+                LIMIT ?
+                """,
+                (after_id, limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def replace_document_videos(self, document_id: int, videos) -> int:
+        """Replace only a document's video rows; never modifies the document itself."""
+        with self._conn(write=True) as c:
+            self._replace_document_videos(c, int(document_id), videos)
+            row = c.execute(
+                "SELECT count(*) FROM document_videos WHERE document_id=?",
+                (int(document_id),),
+            ).fetchone()
+            return int(row[0]) if row else 0
+
+    def search_videos(self, query: str, limit: int = 50, offset: int = 0) -> list:
+        """Search video metadata using whole-word/phrase matching."""
+        import re
+
+        query = (query or "").strip()
+        if not query:
+            return []
+
+        limit = max(1, int(limit))
+        offset = max(0, int(offset))
+
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+
+        try:
+            matcher = re.compile(
+                rf"(?<!\w){re.escape(query)}(?!\w)",
+                re.IGNORECASE,
+            )
+        except re.error:
+            return []
+
+        with self._conn() as c:
+            rows = c.execute(
+                """
+                SELECT
+                  dv.id,
+                  dv.document_id,
+                  dv.video_url,
+                  dv.kind,
+                  dv.source_page_url,
+                  dv.source_domain,
+                  dv.title,
+                  dv.thumbnail_url,
+                  dv.position,
+                  d.title AS page_title,
+                  d.description AS page_description
+                FROM document_videos dv
+                JOIN documents d ON d.id = dv.document_id
+                WHERE d.status='ok'
+                  AND (
+                    dv.title LIKE ? ESCAPE '\\'
+                    OR d.title LIKE ? ESCAPE '\\'
+                    OR d.description LIKE ? ESCAPE '\\'
+                    OR dv.source_domain LIKE ? ESCAPE '\\'
+                  )
+                ORDER BY dv.id DESC
+                """,
+                (pattern, pattern, pattern, pattern),
+            ).fetchall()
+
+        matched = []
+        for row in rows:
+            values = (
+                row["title"],
+                row["page_title"],
+                row["page_description"],
+                row["source_domain"],
+            )
+            if any(matcher.search(str(value or "")) for value in values):
+                matched.append(dict(row))
+
+        return matched[offset:offset + limit]
+
+    @staticmethod
     def _delete_document_images(c, document_ids) -> None:
         ids = [int(i) for i in document_ids if i is not None]
         if not ids:
@@ -597,6 +1270,38 @@ class SQLiteStorage(Storage):
             self._replace_document_images(c, int(document_id), images)
             row = c.execute(
                 "SELECT count(*) FROM document_images WHERE document_id=?",
+                (int(document_id),),
+            ).fetchone()
+            return int(row[0]) if row else 0
+
+    def documents_needing_location_backfill(
+        self,
+        limit: int = 100,
+        after_id: int = 0,
+    ):
+        """Return active documents for location backfill after a document-id cursor."""
+        limit = max(1, int(limit))
+        after_id = max(0, int(after_id))
+        with self._conn() as c:
+            rows = c.execute(
+                """
+                SELECT d.id, d.url, d.canonical_url, d.domain
+                FROM documents d
+                WHERE d.status='ok'
+                  AND d.id > ?
+                ORDER BY d.id
+                LIMIT ?
+                """,
+                (after_id, limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def replace_document_locations(self, document_id: int, locations) -> int:
+        """Replace only a document's location rows; never modifies the document itself."""
+        with self._conn(write=True) as c:
+            self._replace_document_locations(c, int(document_id), locations)
+            row = c.execute(
+                "SELECT count(*) FROM document_locations WHERE document_id=?",
                 (int(document_id),),
             ).fetchone()
             return int(row[0]) if row else 0
@@ -692,9 +1397,13 @@ class SQLiteStorage(Storage):
                         (now, int(bool(doc.nosnippet)), ex["id"]),
                     )
                     self._replace_document_images(c, ex["id"], doc.images)
+                    self._replace_document_videos(c, ex["id"], doc.videos)
+                    self._replace_document_locations(c, ex["id"], doc.locations)
                     return SaveResult("unchanged", ex["id"])
                 self._update(c, ex["id"], vals, now)
                 self._replace_document_images(c, ex["id"], doc.images)
+                self._replace_document_videos(c, ex["id"], doc.videos)
+                self._replace_document_locations(c, ex["id"], doc.locations)
                 return SaveResult("updated" if active else "reactivated", ex["id"])
 
             # only ACTIVE documents can make a new page a duplicate
@@ -706,12 +1415,16 @@ class SQLiteStorage(Storage):
             if byurl:   # same URL, canonical changed
                 self._update(c, byurl["id"], vals, now)
                 self._replace_document_images(c, byurl["id"], doc.images)
+                self._replace_document_videos(c, byurl["id"], doc.videos)
+                self._replace_document_locations(c, byurl["id"], doc.locations)
                 return SaveResult("updated" if byurl["status"] == "ok" else "reactivated", byurl["id"])
 
             cur = c.execute(
                 f"INSERT INTO documents ({','.join(_DOC_COLS)}) VALUES ({','.join('?' * len(_DOC_COLS))})",
                 [vals[k] for k in _DOC_COLS])
             self._replace_document_images(c, cur.lastrowid, doc.images)
+            self._replace_document_videos(c, cur.lastrowid, doc.videos)
+            self._replace_document_locations(c, cur.lastrowid, doc.locations)
             return SaveResult("inserted", cur.lastrowid)
 
     @staticmethod
@@ -735,6 +1448,7 @@ class SQLiteStorage(Storage):
             if ids:
                 self._deactivate(c, ids, status, now_iso())
                 self._delete_document_images(c, ids)
+                self._delete_document_videos(c, ids)
             return ids
 
     def record_fetch_failure(self, urls, threshold: int) -> list:
@@ -1216,6 +1930,126 @@ class SQLiteStorage(Storage):
                 )
             return cur.rowcount > 0
 
+    def register_news_candidate(
+        self,
+        url: str,
+        feed_url: str,
+        feed_kind: str,
+    ) -> None:
+        now = now_iso()
+        with self._conn(write=True) as c:
+            c.execute(
+                """
+                INSERT INTO news_candidates(
+                  url, source_feed_url, source_feed_kind, discovered_at
+                )
+                VALUES (?,?,?,?)
+                ON CONFLICT(url) DO UPDATE SET
+                  source_feed_url=excluded.source_feed_url,
+                  source_feed_kind=excluded.source_feed_kind,
+                  discovered_at=excluded.discovered_at
+                """,
+                (url, feed_url, feed_kind, now),
+            )
+
+            existing = c.execute(
+                """
+                SELECT id
+                FROM documents
+                WHERE url=? OR canonical_url=?
+                LIMIT 1
+                """,
+                (url, url),
+            ).fetchone()
+
+            if existing:
+                c.execute(
+                    """
+                    INSERT INTO document_news(
+                      document_id, source_feed_url, source_feed_kind, discovered_at
+                    )
+                    VALUES (?,?,?,?)
+                    ON CONFLICT(document_id) DO UPDATE SET
+                      source_feed_url=excluded.source_feed_url,
+                      source_feed_kind=excluded.source_feed_kind,
+                      discovered_at=excluded.discovered_at
+                    """,
+                    (existing["id"], feed_url, feed_kind, now),
+                )
+
+    def link_news_document(
+        self,
+        document_id: int,
+        url: str,
+        canonical_url: str,
+        feed_url: Optional[str] = None,
+        feed_kind: Optional[str] = None,
+    ) -> None:
+        now = now_iso()
+        with self._conn(write=True) as c:
+            if feed_url and feed_kind:
+                source = (feed_url, feed_kind)
+            else:
+                source = None
+
+            if source is None:
+                row = c.execute(
+                    """
+                    SELECT source_feed_url, source_feed_kind
+                    FROM news_candidates
+                    WHERE url=? OR url=?
+                    LIMIT 1
+                    """,
+                    (url, canonical_url),
+                ).fetchone()
+                if not row:
+                    return
+                source = (row["source_feed_url"], row["source_feed_kind"])
+
+            c.execute(
+                """
+                INSERT INTO document_news(
+                  document_id, source_feed_url, source_feed_kind, discovered_at
+                )
+                VALUES (?,?,?,?)
+                ON CONFLICT(document_id) DO UPDATE SET
+                  source_feed_url=excluded.source_feed_url,
+                  source_feed_kind=excluded.source_feed_kind,
+                  discovered_at=excluded.discovered_at
+                """,
+                (document_id, source[0], source[1], now),
+            )
+
+    def search_news_document_ids(self, limit: int = 10000) -> list[int]:
+        with self._conn() as c:
+            rows = c.execute(
+                """
+                SELECT dn.document_id
+                FROM document_news dn
+                JOIN documents d ON d.id = dn.document_id
+                WHERE d.status='ok'
+                ORDER BY dn.discovered_at DESC, dn.document_id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [int(row["document_id"]) for row in rows]
+
+    def search_maps_document_ids(self, limit: int = 10000) -> list[int]:
+        with self._conn() as c:
+            rows = c.execute(
+                """
+                SELECT DISTINCT dl.document_id
+                FROM document_locations dl
+                JOIN documents d ON d.id = dl.document_id
+                WHERE d.status='ok'
+                ORDER BY dl.document_id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [int(row['document_id']) for row in rows]
+
     def requeue_due_urls(self) -> int:
         """Requeue completed URLs whose freshness interval has expired."""
         now = now_iso()
@@ -1235,7 +2069,8 @@ class SQLiteStorage(Storage):
     def claim_next(self, exclude_domains: Sequence[str] = ()) -> Optional[QueueItem]:
         ex = list(exclude_domains)
         sql = (
-            "SELECT id, url, domain, depth, attempts "
+            "SELECT id, url, domain, depth, attempts, "
+            "NULL AS news_feed_url, NULL AS news_feed_kind "
             "FROM urls "
             "WHERE status='pending' "
             "AND (next_crawl_at IS NULL OR next_crawl_at<=?)"
@@ -1250,6 +2085,39 @@ class SQLiteStorage(Storage):
             c.execute("UPDATE urls SET status='in_progress', attempts=attempts+1, last_attempt_at=? WHERE id=?",
                       (now_iso(), r["id"]))
             return QueueItem(r["id"], r["url"], r["domain"], r["depth"], r["attempts"] + 1)
+
+    def claim_next_news(
+        self, exclude_domains: Sequence[str] = ()
+    ) -> Optional[QueueItem]:
+        ex = list(exclude_domains)
+        sql = (
+            "SELECT u.id, u.url, u.domain, u.depth, u.attempts "
+            "FROM urls u "
+            "JOIN news_candidates nc ON nc.url=u.url "
+            "WHERE u.status='pending' "
+            "AND (u.next_crawl_at IS NULL OR u.next_crawl_at<=?)"
+        )
+        if ex:
+            sql += f" AND u.domain NOT IN ({','.join('?' * len(ex))})"
+        sql += " ORDER BY u.id LIMIT 1"
+
+        with self._conn(write=True) as c:
+            r = c.execute(sql, [now_iso(), *ex]).fetchone()
+            if not r:
+                return None
+            c.execute(
+                "UPDATE urls "
+                "SET status='in_progress', attempts=attempts+1, last_attempt_at=? "
+                "WHERE id=?",
+                (now_iso(), r["id"]),
+            )
+            return QueueItem(
+                r["id"],
+                r["url"],
+                r["domain"],
+                r["depth"],
+                r["attempts"] + 1,
+            )
 
     def get_url_attempts(self, url: str) -> int:
         with self._conn() as c:

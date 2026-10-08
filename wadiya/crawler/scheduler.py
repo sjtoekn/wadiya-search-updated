@@ -27,6 +27,7 @@ class ContinuousCrawler:
         fetcher,
         robots,
         *,
+        books_indexer=None,
         sleep=time.sleep,
     ):
         self.settings = settings
@@ -34,6 +35,7 @@ class ContinuousCrawler:
         self.indexer = indexer
         self.fetcher = fetcher
         self.robots = robots
+        self.books_indexer = books_indexer
         self._sleep = sleep
 
     def run(
@@ -81,6 +83,14 @@ class ContinuousCrawler:
                 indexed = index_pending(
                     self.storage,
                     self.indexer,
+                )
+
+            if self.books_indexer is not None:
+                from ..pipeline import sync_books_index
+
+                sync_books_index(
+                    self.storage,
+                    self.books_indexer,
                 )
 
             yield SchedulerCycle(

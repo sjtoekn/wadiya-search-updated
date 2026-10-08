@@ -22,6 +22,35 @@ def sync_index(storage: Storage, indexer: Indexer, batch: int = 200) -> tuple:
         removed += len(dead)
 
 
+def sync_books_index(storage: Storage, indexer, batch: int = 200) -> int:
+    """Index stored Books records into the dedicated Books index."""
+    indexed = 0
+    offset = 0
+
+    while True:
+        books = storage.get_books(limit=batch, offset=offset)
+        if not books:
+            return indexed
+
+        indexer.index(
+            {
+                "id": book.id,
+                "title": book.title,
+                "author": list(book.author),
+                "isbn": book.isbn,
+                "description": book.description,
+            }
+            for book in books
+        )
+
+        indexed += len(books)
+
+        if len(books) < batch:
+            return indexed
+
+        offset += len(books)
+
+
 def index_pending(storage: Storage, indexer: Indexer, batch: int = 200) -> int:
     """Sync the index; returns how many documents were (re)indexed."""
     return sync_index(storage, indexer, batch)[0]

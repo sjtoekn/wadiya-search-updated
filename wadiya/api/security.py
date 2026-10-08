@@ -1,8 +1,17 @@
 """Framework-independent HTTP security constants/helpers. api/app.py applies them; tests check them directly."""
 from __future__ import annotations
 
-CSP = ("default-src 'self'; img-src 'self' data: https:; style-src 'self'; script-src 'self'; "
-       "base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+CSP = (
+    "default-src 'self'; "
+    "img-src 'self' data: https:; "
+    "media-src 'self' https:; "
+    "frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com https://player.vimeo.com; "
+    "style-src 'self'; "
+    "script-src 'self'; "
+    "base-uri 'none'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
+)
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": CSP,
